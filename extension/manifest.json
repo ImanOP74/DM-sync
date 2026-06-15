@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Instagram DM Sync",
+  "version": "1.0",
+  "description": "Synchronizes Instagram Direct Messages to your Supabase Database.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.supabase.co/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.instagram.com/direct/*",
+        "https://*.instagram.com/direct/t/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ]
+}

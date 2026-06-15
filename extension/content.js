@@ -151,21 +151,35 @@ function initializeThreadSync(threadId) {
  * Extracts conversation display title.
  */
 function getChatName() {
-  const selectors = [
-    'div[role="main"] header span[role="link"]',
-    'div[role="main"] header span',
-    'div[role="main"] h1',
-    'span[role="link"]'
-  ];
-
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (el && el.textContent.trim()) {
-      return el.textContent.trim();
+  // 1. Target the text inside the chat pane header specifically
+  const header = document.querySelector('div[role="main"] header') || 
+                 document.querySelector('header');
+  
+  if (header) {
+    // Look for link spans, buttons, or direct spans in the header
+    const nameEl = header.querySelector('span[role="link"]') || 
+                   header.querySelector('span') || 
+                   header.querySelector('div[role="button"]');
+    if (nameEl && nameEl.textContent.trim()) {
+      const name = nameEl.textContent.trim();
+      // Filter out navigation names, tabs, or system text
+      if (name && name !== "Messages" && name !== "Direct" && name.length < 40) {
+        return name;
+      }
     }
   }
 
-  if (document.title && document.title !== "Instagram") {
+  // 2. Fallback to headings inside the main panel
+  const headings = document.querySelectorAll('div[role="main"] h1, div[role="main"] h2');
+  for (const h of headings) {
+    const text = h.textContent.trim();
+    if (text && text !== "Messages" && text !== "Direct" && text.length < 40) {
+      return text;
+    }
+  }
+
+  // 3. Fallback to page title if clean
+  if (document.title && document.title !== "Instagram" && !document.title.includes("Messages")) {
     return document.title.replace(" • Instagram", "").replace("Chat", "").trim();
   }
   return `Instagram Chat ${activeThreadId}`;
@@ -223,67 +237,30 @@ function isTimestampHeader(element) {
 }
 
 /**
- * Walks up the DOM to find the nearest preceding timestamp header.
+ * Walks up the DOM starting from a message bubble to find the nearest preceding timestamp header.
  */
-function getNearestTimestampHeader(row) {
-  let current = row.previousElementSibling;
-  while (current) {
-    if (isTimestampHeader(current)) {
-      return current.textContent.trim();
+function getNearestTimestampHeader(bubble) {
+  let current = bubble;
+  while (current && current !== document.body) {
+    let sibling = current.previousElementSibling;
+    while (sibling) {
+      if (isTimestampHeader(sibling)) {
+        return sibling.textContent.trim();
+      }
+      // Check if the sibling contains a child representing timestamp text (e.g. <time>)
+      const innerTime = sibling.querySelector('time') || sibling.querySelector('[class*="timestamp"]');
+      if (innerTime && innerTime.textContent.trim()) {
+        return innerTime.textContent.trim();
+      }
+      sibling = sibling.previousElementSibling;
     }
-    current = current.previousElementSibling;
+    current = current.parentElement;
   }
   return "date_unknown";
 }
 
 /**
- * Extract raw text from the row.
- */
-function getRowTextContent(row) {
-  const textElements = row.querySelectorAll('div[dir="auto"], span');
-  for (const el of textElements) {
-    const text = el.textContent.trim();
-    if (text && text.length > 0 && !el.querySelector('svg')) {
-      return { text, element: el };
-    }
-  }
-  return null;
-}
-
-/**
- * Generates a stable unique ID for a message that is independent of pagination or scroll-up indices.
- * Format: threadId + senderId + text + timeHeader + occurrenceIndex
- */
-function generateStableMessageId(threadId, senderId, text, row, timeHeader) {
-  let occurrenceIndex = 0;
-  let current = row.previousElementSibling;
-
-  while (current) {
-    if (isTimestampHeader(current)) {
-      break;
-    }
-
-    const rowDetails = getRowTextContent(current);
-    if (rowDetails) {
-      const currentText = rowDetails.text;
-      const outgoing = isOutgoingMessage(rowDetails.element);
-      const currentSender = outgoing ? 'me' : 'other'; // strictly stable 'me' or 'other'
-
-      if (currentText === text && currentSender === senderId) {
-        occurrenceIndex++;
-      }
-    }
-    current = current.previousElementSibling;
-  }
-
-  const rawId = `${threadId}_${senderId}_${text}_${timeHeader}_${occurrenceIndex}`;
-  return btoa(unescape(encodeURIComponent(rawId)))
-    .replace(/=/g, "")
-    .substring(0, 80);
-}
-
-/**
- * Scans the visible chat, extracts messages, and fires sync messages.
+ * Scans the visible chat log, extracts messages, and fires sync messages.
  */
 function syncAllVisibleMessages(container) {
   if (!activeThreadId) return;
@@ -294,24 +271,43 @@ function syncAllVisibleMessages(container) {
     console.log(`[Instagram DM Sync] Active chat display name: "${activeChatName}"`);
   }
 
-  const rows = container.querySelectorAll('div[role="row"]');
-  if (rows.length === 0) return;
+  // 1. Locate all text message bubbles inside the chat box
+  // Exclude inputs, forms, and editable text boxes (like search inputs or draft boxes)
+  const bubbles = Array.from(container.querySelectorAll('div[dir="auto"], span[dir="auto"]')).filter(el => {
+    return !el.closest('[contenteditable="true"]') && 
+           !el.closest('form') && 
+           !el.closest('[role="textbox"]');
+  });
+
+  if (bubbles.length === 0) return;
 
   const newMessages = [];
+  
+  // Local in-memory counter to track duplicate consecutive messages under the same time block
+  // Format: key `${text}_${senderId}_${timeHeader}` -> count index
+  const textOccurrenceCount = {};
 
-  rows.forEach((row) => {
-    const textDetails = getRowTextContent(row);
-    if (!textDetails) return;
+  bubbles.forEach((bubble) => {
+    const text = bubble.textContent.trim();
+    if (!text || text.length === 0) return;
 
-    const { text, element } = textDetails;
-    const outgoing = isOutgoingMessage(element);
+    const outgoing = isOutgoingMessage(bubble);
     
     // Core Stable Identifiers: 'me' vs 'other'
     const senderId = outgoing ? 'me' : 'other';
     const senderUsername = outgoing ? 'me' : activeChatName;
+    const timeHeader = getNearestTimestampHeader(bubble);
 
-    const timeHeader = getNearestTimestampHeader(row);
-    const instagramMessageId = generateStableMessageId(activeThreadId, senderId, text, row, timeHeader);
+    // Calculate stable occurrence index for duplicate text sent consecutively
+    const countKey = `${text}_${senderId}_${timeHeader}`;
+    const occurrenceIndex = textOccurrenceCount[countKey] || 0;
+    textOccurrenceCount[countKey] = occurrenceIndex + 1;
+
+    // Generate unique ID based on in-memory order of elements
+    const rawId = `${activeThreadId}_${senderId}_${text}_${timeHeader}_${occurrenceIndex}`;
+    const instagramMessageId = btoa(unescape(encodeURIComponent(rawId)))
+      .replace(/=/g, "")
+      .substring(0, 80);
 
     if (syncedMessageIds.has(instagramMessageId)) {
       return;
@@ -348,7 +344,7 @@ function syncAllVisibleMessages(container) {
     }, (response) => {
       if (chrome.runtime.lastError) {
         console.error("[Instagram DM Sync] Sync call failed:", chrome.runtime.lastError.message);
-        // Rollback local caches for retry next trigger
+        // Rollback local caches for retry on next observer mutation
         newMessages.forEach(msg => syncedMessageIds.delete(msg.instagram_message_id));
         return;
       }

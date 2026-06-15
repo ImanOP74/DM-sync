@@ -1,9 +1,14 @@
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, TARGET_THREAD_ID } from './config.js';
 
 console.log("[Instagram DM Sync] Background service worker active.");
 
 // Listener for runtime sync dispatches
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'get_config') {
+    sendResponse({ targetThreadId: TARGET_THREAD_ID || null });
+    return false; // synchronous response
+  }
+
   if (request.action === 'sync_thread') {
     handleSyncThread(request.payload)
       .then(result => sendResponse({ success: true, result }))
@@ -59,6 +64,12 @@ async function fetchWithRetry(url, options, maxRetries = 3, initialDelay = 1000)
 async function handleSyncThread({ conversation, messages }) {
   if (!SUPABASE_URL || SUPABASE_URL.includes("your-supabase-project-id")) {
     throw new Error("Supabase credentials not configured inside extension/config.js.");
+  }
+
+  // Filter out any non-target thread syncs if TARGET_THREAD_ID is specified
+  if (TARGET_THREAD_ID && conversation.instagram_thread_id !== TARGET_THREAD_ID) {
+    console.log(`[Instagram DM Sync] Sync ignored. Thread ID ${conversation.instagram_thread_id} does not match TARGET_THREAD_ID ${TARGET_THREAD_ID}`);
+    return { dbConversationId: null, syncedMessagesCount: 0, skipped: true };
   }
 
   // --- Step 1: Upsert Conversation with Retry ---

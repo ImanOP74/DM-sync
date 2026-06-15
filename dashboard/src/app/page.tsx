@@ -47,7 +47,11 @@ export default function DashboardHub() {
 
   // Fetch initial conversations list on mount
   useEffect(() => {
-    fetchConversations();
+    fetchConversations().then(convs => {
+      if (convs && convs.length > 0 && !selectedConversation) {
+        setSelectedConversation(convs[0]);
+      }
+    });
   }, []);
 
   // Debounce search query to avoid spamming Supabase API on every keystroke
@@ -84,7 +88,12 @@ export default function DashboardHub() {
             const newConv = payload.new as Conversation;
             setConversations(prev => {
               if (prev.some(c => c.id === newConv.id)) return prev;
-              return [newConv, ...prev];
+              const nextList = [newConv, ...prev];
+              // Auto-select conversation if it's the first one synced
+              if (nextList.length === 1) {
+                setSelectedConversation(newConv);
+              }
+              return nextList;
             });
           } else if (payload.eventType === 'UPDATE') {
             const updatedConv = payload.new as Conversation;
@@ -186,9 +195,11 @@ export default function DashboardHub() {
       const { data, error } = await query;
       if (error) throw error;
       setConversations(data || []);
+      return data || [];
     } catch (err) {
       console.error("[Dashboard] Error fetching conversations:", err);
       setSyncStatus('error');
+      return [];
     } finally {
       setIsLoadingConversations(false);
     }
@@ -224,8 +235,10 @@ export default function DashboardHub() {
     }
   };
 
-  const showSidebar = !isMobileView || !selectedConversation;
-  const showChatArea = !isMobileView || !!selectedConversation;
+  // If there is exactly one conversation, we hide the sidebar to provide a clean full-screen view.
+  // Otherwise, we show the sidebar for selection/search.
+  const showSidebar = (conversations.length === 0 || conversations.length > 1) && (!isMobileView || !selectedConversation);
+  const showChatArea = conversations.length === 1 || !isMobileView || !!selectedConversation;
 
   return (
     <div className="flex h-screen bg-[#09090b] text-[#f4f4f5] overflow-hidden antialiased">

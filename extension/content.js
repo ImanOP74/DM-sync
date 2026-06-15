@@ -33,8 +33,27 @@ function checkNavigation() {
 
   if (currentThreadId !== activeThreadId) {
     if (currentThreadId) {
-      console.log(`[Instagram DM Sync] Navigated to thread: ${currentThreadId}. Connecting observer...`);
-      initializeThreadSync(currentThreadId);
+      // Retrieve TARGET_THREAD_ID configuration dynamically from background worker
+      chrome.runtime.sendMessage({ action: 'get_config' }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[Instagram DM Sync] Failed to retrieve configuration from background worker:", chrome.runtime.lastError.message);
+          // Fallback: continue initialization
+          initializeThreadSync(currentThreadId);
+          return;
+        }
+
+        const targetThreadId = response?.targetThreadId;
+        if (targetThreadId && currentThreadId !== targetThreadId) {
+          console.log(`[Instagram DM Sync] Current thread (${currentThreadId}) is NOT the target thread (${targetThreadId}). Real-time sync disabled.`);
+          cleanupThreadSync();
+          // Cache the current thread ID to avoid repeating logs on every navigation check interval
+          activeThreadId = currentThreadId;
+          return;
+        }
+
+        console.log(`[Instagram DM Sync] Navigated to target thread: ${currentThreadId}. Connecting observer...`);
+        initializeThreadSync(currentThreadId);
+      });
     } else {
       console.log("[Instagram DM Sync] Navigated away from chat. Disconnecting observer.");
       cleanupThreadSync();
@@ -151,38 +170,131 @@ function initializeThreadSync(threadId) {
  * Extracts conversation display title.
  */
 function getChatName() {
-  // 1. Target the text inside the chat pane header specifically
-  const header = document.querySelector('div[role="main"] header') || 
-                 document.querySelector('header');
-  
-  if (header) {
-    // Look for link spans, buttons, or direct spans in the header
-    const nameEl = header.querySelector('span[role="link"]') || 
-                   header.querySelector('span') || 
-                   header.querySelector('div[role="button"]');
-    if (nameEl && nameEl.textContent.trim()) {
-      const name = nameEl.textContent.trim();
-      // Filter out navigation names, tabs, or system text
-      if (name && name !== "Messages" && name !== "Direct" && name.length < 40) {
-        return name;
+  // Helper to extract text content without inner SVGs, images or icon indicators
+  const cleanElementText = (el) => {
+    if (!el) return "";
+    const clone = el.cloneNode(true);
+    // Remove all SVGs, images, and elements with icon/chevron class patterns
+    clone.querySelectorAll('svg, img, [role="img"], [class*="icon"], [class*="Chevron"], [class*="chevron"]').forEach(node => node.remove());
+    // Strip trailing chevron text fallbacks
+    return clone.textContent.replace(/Down chevron icon/gi, '').replace(/chevron/gi, '').trim();
+  };
+
+  // Helper to rank names (prefer spaces, camelcase/uppercase, penalize underscores/dots)
+  const rankCandidates = (candidates) => {
+    if (candidates.length === 0) return null;
+    const scored = candidates.map(name => {
+      let score = 0;
+      if (name.includes(' ')) score += 10;
+      if (/[A-Z]/.test(name)) score += 5;
+      if (name.includes('_') || name.includes('.')) score -= 3;
+      if (name.length >= 3 && name.length <= 25) score += 2;
+      return { name, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].name;
+  };
+
+  // 1. Try to get candidates from the sidebar list link matching our activeThreadId first.
+  // The sidebar item is highly reliable because it shows the display name (e.g. "My Boy") as shown in the chat list.
+  const sidebarCandidates = [];
+  const sidebarLinks = Array.from(document.querySelectorAll('a[href*="/direct/t/"]'));
+  for (const link of sidebarLinks) {
+    if (link.href.includes(activeThreadId)) {
+      const spans = Array.from(link.querySelectorAll('span, div'));
+      for (const span of spans) {
+        if (span.children.length === 0) {
+          const text = cleanElementText(span);
+          if (isValidChatName(text)) {
+            sidebarCandidates.push(text);
+          }
+        }
       }
     }
   }
 
-  // 2. Fallback to headings inside the main panel
-  const headings = document.querySelectorAll('div[role="main"] h1, div[role="main"] h2');
-  for (const h of headings) {
-    const text = h.textContent.trim();
-    if (text && text !== "Messages" && text !== "Direct" && text.length < 40) {
-      return text;
+  const bestSidebarName = rankCandidates(sidebarCandidates);
+  if (bestSidebarName) {
+    return bestSidebarName;
+  }
+
+  // 2. Try to find the header container inside the main chat layout
+  const chatPane = document.querySelector('div[role="main"]') || 
+                   document.querySelector('section');
+  if (chatPane) {
+    // Search for <header> element specifically within the chatPane (avoiding global headers)
+    const header = chatPane.querySelector('header');
+    if (header) {
+      const headerCandidates = [];
+      const candidateElements = Array.from(header.querySelectorAll('span[role="link"], a, span, div[role="button"]'));
+      for (const el of candidateElements) {
+        const text = cleanElementText(el);
+        if (isValidChatName(text)) {
+          headerCandidates.push(text);
+        }
+      }
+      const bestHeaderName = rankCandidates(headerCandidates);
+      if (bestHeaderName) {
+        return bestHeaderName;
+      }
+    }
+
+    // 3. Fallback: Search the top region of the chat pane for links/buttons with text
+    // The header is always at the top of the chat area; we check elements within the top 120px
+    const chatPaneRect = chatPane.getBoundingClientRect();
+    const elements = Array.from(chatPane.querySelectorAll('span, a, div[role="button"], h1, h2, h3'));
+    const topCandidates = [];
+    for (const el of elements) {
+      const rect = el.getBoundingClientRect();
+      if (rect.top >= chatPaneRect.top && rect.top <= chatPaneRect.top + 120 && rect.height > 0) {
+        const text = cleanElementText(el);
+        if (isValidChatName(text)) {
+          topCandidates.push(text);
+        }
+      }
+    }
+    const bestTopName = rankCandidates(topCandidates);
+    if (bestTopName) {
+      return bestTopName;
     }
   }
 
-  // 3. Fallback to page title if clean
-  if (document.title && document.title !== "Instagram" && !document.title.includes("Messages")) {
-    return document.title.replace(" • Instagram", "").replace("Chat", "").trim();
+  // 4. Fallback: Look at the page title if it is clean
+  if (document.title && !document.title.includes("Instagram") && !document.title.includes("Messages") && !document.title.includes("Direct")) {
+    const cleanTitle = document.title.replace(" • Instagram", "").replace("Chat", "").trim();
+    if (cleanTitle && cleanTitle.length < 40) {
+      return cleanTitle;
+    }
   }
+
   return `Instagram Chat ${activeThreadId}`;
+}
+
+/**
+ * Validates whether a text string is likely the actual display name of a chat participant.
+ */
+function isValidChatName(text) {
+  if (!text) return false;
+  if (text.length > 40) return false;
+
+  const lowerText = text.toLowerCase();
+  const exclusions = [
+    "messages", "direct", "active", "online", "ago", "audio", "video", 
+    "call", "chat", "info", "details", "group", "instagram", "search", 
+    "cancel", "done", "next", "loading", "profile", "view profile", 
+    "active now", "active today", "active yesterday", "active 1h ago",
+    "active 2h ago", "active 3h ago", "active 4h ago", "active 5h ago"
+  ];
+
+  if (exclusions.includes(lowerText)) return false;
+  if (exclusions.some(exc => lowerText.startsWith(exc) || lowerText.endsWith(exc))) return false;
+
+  // Exclude purely numeric strings
+  if (/^\d+$/.test(text)) return false;
+  // Exclude strings containing time dividers or path components
+  if (text.includes(":") || text.includes("/") || text.includes("\\")) return false;
+
+  return true;
 }
 
 /**

@@ -74,10 +74,33 @@ function debounce(func, wait) {
  * Selects the scrollable messages pane in the DOM.
  */
 function findChatContainer() {
-  return document.querySelector('div[role="main"] div[role="log"]') || 
-         document.querySelector('div[role="log"]') ||
-         document.querySelector('div[role="main"] div[role="presentation"]') ||
-         document.querySelector('div[role="main"]');
+  // 1. Try to find the container relative to active message rows
+  const row = document.querySelector('div[role="row"]');
+  if (row && row.parentElement) {
+    return row.parentElement;
+  }
+
+  // 2. Look for semantic ARIA role containers
+  const semanticContainer = document.querySelector('div[role="log"]') || 
+                            document.querySelector('div[role="main"] div[role="presentation"]') ||
+                            document.querySelector('div[role="main"]');
+  if (semanticContainer) return semanticContainer;
+
+  // 3. Fallback: Search for any scrollable content div matching typical height constraints
+  try {
+    const scrollableDivs = Array.from(document.querySelectorAll('div')).filter(el => {
+      const style = window.getComputedStyle(el);
+      return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.clientHeight > 300;
+    });
+    if (scrollableDivs.length > 0) {
+      return scrollableDivs[0];
+    }
+  } catch (e) {
+    console.error("[Instagram DM Sync] Error searching scrollable containers:", e);
+  }
+
+  // 4. Ultimate Fallback: Observes the whole page body if no specific log layout is loaded
+  return document.body;
 }
 
 /**

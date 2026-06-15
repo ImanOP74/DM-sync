@@ -1,92 +1,116 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
-console.log("[Instagram DM Sync] Background service worker initialized.");
+console.log("[Instagram DM Sync] Background service worker active.");
 
-// Listen for messages from the content script
+// Listener for runtime sync dispatches
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'sync_thread') {
     handleSyncThread(request.payload)
       .then(result => sendResponse({ success: true, result }))
       .catch(error => {
-        console.error("[Instagram DM Sync] Background sync error:", error);
+        console.error("[Instagram DM Sync] Background execution failed after retries:", error);
         sendResponse({ success: false, error: error.message });
       });
     
-    // Return true to indicate we will send response asynchronously
-    return true;
+    return true; // Keep message channel open for async execution
   }
 });
 
 /**
- * Handles the multi-step upsert process:
- * 1. Upserts the conversation to get the internal UUID (via return=representation).
- * 2. Appends the retrieved UUID to all message objects.
- * 3. Upserts all messages using the Supabase PostgREST API with conflict resolution.
+ * Enhanced fetch engine equipped with exponential backoff retry logic.
+ */
+async function fetchWithRetry(url, options, maxRetries = 3, initialDelay = 1000) {
+  let delay = initialDelay;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      if (response.ok) {
+        return response;
+      }
+
+      // If it's a standard client error (excluding rate limits 429), don't bother retrying
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        const errorText = await response.text();
+        throw new Error(`Client error ${response.status}: ${errorText || response.statusText}`);
+      }
+
+      // Server error or rate limit, trigger retry delay
+      if (attempt === maxRetries) {
+        throw new Error(`Server returned status code: ${response.status}`);
+      }
+      console.warn(`[Instagram DM Sync] Attempt ${attempt} returned status ${response.status}. Retrying in ${delay}ms...`);
+    } catch (err) {
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      console.warn(`[Instagram DM Sync] Attempt ${attempt} failed with network error: ${err.message}. Retrying in ${delay}ms...`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delay));
+    delay *= 2; // Exponential spacing
+  }
+}
+
+/**
+ * Handles the conversation & message upsert flow with retry capability.
  */
 async function handleSyncThread({ conversation, messages }) {
   if (!SUPABASE_URL || SUPABASE_URL.includes("your-supabase-project-id")) {
-    throw new Error("Supabase credentials not configured. Please edit config.js.");
+    throw new Error("Supabase credentials not configured inside extension/config.js.");
   }
 
-  console.log(`[Instagram DM Sync] Synchronizing thread: ${conversation.instagram_thread_id} ("${conversation.name}")`);
-
-  // --- Step 1: Upsert Conversation & Get UUID ---
-  const conversationResponse = await fetch(`${SUPABASE_URL}/rest/v1/conversations`, {
+  // --- Step 1: Upsert Conversation with Retry ---
+  const conversationUrl = `${SUPABASE_URL}/rest/v1/conversations`;
+  const conversationOptions = {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_ANON_KEY,
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      // Prefer header instructions:
-      // 'resolution=merge-duplicates' triggers PostgreSQL's ON CONFLICT DO UPDATE
-      // 'return=representation' tells PostgREST to return the inserted/updated row data
       'Prefer': 'resolution=merge-duplicates, return=representation'
     },
     body: JSON.stringify([conversation])
-  });
+  };
 
-  if (!conversationResponse.ok) {
-    const errorText = await conversationResponse.text();
-    throw new Error(`Failed to sync conversation: ${conversationResponse.status} ${errorText}`);
-  }
-
+  console.log(`[Instagram DM Sync] Syncing thread details: ${conversation.instagram_thread_id}...`);
+  const conversationResponse = await fetchWithRetry(conversationUrl, conversationOptions);
+  
   const conversationsData = await conversationResponse.json();
   if (!conversationsData || conversationsData.length === 0) {
-    throw new Error("No conversation data returned from Supabase.");
+    throw new Error("Empty conversation representation returned from database.");
   }
 
   const dbConversationId = conversationsData[0].id;
-  console.log(`[Instagram DM Sync] Conversation registered in DB with UUID: ${dbConversationId}`);
+  console.log(`[Instagram DM Sync] Chat mapped to DB UUID: ${dbConversationId}`);
 
   if (messages.length === 0) {
     return { dbConversationId, syncedMessagesCount: 0 };
   }
 
-  // --- Step 2: Map Messages with conversation_id UUID ---
+  // --- Step 2: Bind internal UUID to messages ---
   const mappedMessages = messages.map(msg => ({
     ...msg,
     conversation_id: dbConversationId
   }));
 
-  // --- Step 3: Upsert Messages ---
-  console.log(`[Instagram DM Sync] Upserting ${mappedMessages.length} messages to database...`);
-  const messagesResponse = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+  // --- Step 3: Upsert Messages with Retry ---
+  const messagesUrl = `${SUPABASE_URL}/rest/v1/messages`;
+  const messagesOptions = {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_ANON_KEY,
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      // Use resolution=merge-duplicates and specify on-conflict target
       'Prefer': 'resolution=merge-duplicates, on-conflict=instagram_message_id'
     },
     body: JSON.stringify(mappedMessages)
-  });
+  };
 
-  if (!messagesResponse.ok) {
-    const errorText = await messagesResponse.text();
-    throw new Error(`Failed to sync messages: ${messagesResponse.status} ${errorText}`);
-  }
-
-  console.log(`[Instagram DM Sync] Successfully synced ${messages.length} messages.`);
+  console.log(`[Instagram DM Sync] Dispatching ${mappedMessages.length} message(s) to DB...`);
+  await fetchWithRetry(messagesUrl, messagesOptions);
+  
+  console.log(`[Instagram DM Sync] Synchronization verified for ${messages.length} message(s).`);
   return { dbConversationId, syncedMessagesCount: messages.length };
 }

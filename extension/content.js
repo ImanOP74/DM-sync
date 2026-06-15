@@ -1,11 +1,11 @@
 /**
- * Instagram DM Sync - Upgraded Content Script
+ * Instagram DM Sync - Optimized Content Script
  * 
- * Key Features:
- * 1. MutationObserver: Monitors the chat container for real-time DOM changes.
- * 2. Stable Deduplication: Uses block-relative occurrence offsets & timestamp dividers
- *    to generate hashes that are stable across page reloads and scroll-ups.
- * 3. Navigation Hooks: Gracefully manages thread changes in Instagram's Single Page App.
+ * Key Enhancements:
+ * 1. Debounced Scraper: Wraps DOM queries to run at most once every 300ms.
+ * 2. Strict ID Stability: Senders are mapped strictly to 'me' or 'other'.
+ *    Prevents duplicate uploads when usernames resolve dynamically.
+ * 3. Selector fallbacks for header parsing and flex-layout checking.
  */
 
 console.log("[Instagram DM Sync] Real-time content observer script active.");
@@ -17,10 +17,10 @@ let chatObserver = null;
 let navigationTimer = null;
 let containerPollingTimer = null;
 
-// local in-memory set to prevent double uploads within the same execution session
+// local cache of synced message hashes in the current session
 const syncedMessageIds = new Set();
 
-// Start watching the URL for conversation changes
+// Start checking URL for transitions
 navigationTimer = setInterval(checkNavigation, 1000);
 
 /**
@@ -43,7 +43,7 @@ function checkNavigation() {
 }
 
 /**
- * Cleans up existing observers and intervals to prevent leaks.
+ * Cleans up observers and states.
  */
 function cleanupThreadSync() {
   if (chatObserver) {
@@ -60,10 +60,20 @@ function cleanupThreadSync() {
 }
 
 /**
- * Finds the appropriate message list scroll container in the DOM.
+ * Utility debounce function to control execution rate during layout storms.
+ */
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+/**
+ * Selects the scrollable messages pane in the DOM.
  */
 function findChatContainer() {
-  // Try role="log" (standard scroll container), presentation wrapper, or the main content pane
   return document.querySelector('div[role="main"] div[role="log"]') || 
          document.querySelector('div[role="log"]') ||
          document.querySelector('div[role="main"] div[role="presentation"]') ||
@@ -71,8 +81,7 @@ function findChatContainer() {
 }
 
 /**
- * Initializes the sync process for a new thread by polling for the container,
- * doing an initial parse, and attaching the MutationObserver.
+ * Sets up the syncing listeners for the loaded thread ID.
  */
 function initializeThreadSync(threadId) {
   cleanupThreadSync();
@@ -87,32 +96,36 @@ function initializeThreadSync(threadId) {
       clearInterval(containerPollingTimer);
       containerPollingTimer = null;
       
-      console.log("[Instagram DM Sync] Found chat container. Running initial scrape...");
-      // Perform immediate initial sync
+      console.log("[Instagram DM Sync] Found chat container. Initializing real-time sync...");
+      
+      // Perform initial check
       syncAllVisibleMessages(container);
 
-      // Attach MutationObserver for real-time tracking
-      chatObserver = new MutationObserver((mutations) => {
-        // Debounce slightly or run immediately since local filtering is highly efficient
-        syncAllVisibleMessages(container);
+      // Setup debounced sync to handle multiple rapid DOM mutations
+      const debouncedSync = debounce((targetContainer) => {
+        syncAllVisibleMessages(targetContainer);
+      }, 300);
+
+      // Attach MutationObserver
+      chatObserver = new MutationObserver(() => {
+        debouncedSync(container);
       });
 
       chatObserver.observe(container, {
         childList: true,
         subtree: true
       });
-      console.log("[Instagram DM Sync] MutationObserver attached to chat container successfully.");
+      console.log("[Instagram DM Sync] Real-time MutationObserver attached successfully.");
     } else if (pollCount > 20) {
-      // Stop polling after 10 seconds to avoid infinite resource consumption
       clearInterval(containerPollingTimer);
       containerPollingTimer = null;
-      console.warn("[Instagram DM Sync] Chat container not found after 10s. Retrying on next navigation.");
+      console.warn("[Instagram DM Sync] Chat container not resolved within 10s.");
     }
   }, 500);
 }
 
 /**
- * Extracts conversation title name.
+ * Extracts conversation display title.
  */
 function getChatName() {
   const selectors = [
@@ -136,44 +149,7 @@ function getChatName() {
 }
 
 /**
- * Identifies if a row is a date/time header separating messages.
- */
-function isTimestampHeader(element) {
-  if (!element) return false;
-  
-  const text = element.textContent.trim();
-  if (text.length === 0) return false;
-
-  // Timestamps usually do not match message structures (don't have role="row" and are center-aligned)
-  const isRow = element.getAttribute('role') === 'row' || element.querySelector('[role="row"]');
-  if (isRow) return false;
-
-  // Matches basic time/date text indicators
-  const hasTimeIndicator = text.includes(':') || 
-                           text.includes('AM') || 
-                           text.includes('PM') || 
-                           text.match(/(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i) ||
-                           text.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i);
-
-  return hasTimeIndicator;
-}
-
-/**
- * Walks up the DOM starting from a message row to find the nearest preceding timestamp header.
- */
-function getNearestTimestampHeader(row) {
-  let current = row.previousElementSibling;
-  while (current) {
-    if (isTimestampHeader(current)) {
-      return current.textContent.trim();
-    }
-    current = current.previousElementSibling;
-  }
-  return "date_unknown";
-}
-
-/**
- * Inspects styles and positions to check if the message was sent by the active user.
+ * Checks if a message element is outgoing or incoming.
  */
 function isOutgoingMessage(element) {
   let parent = element.parentElement;
@@ -205,7 +181,40 @@ function isOutgoingMessage(element) {
 }
 
 /**
- * Extracts raw text from a message row element.
+ * Checks if a node represents a timestamp divider row.
+ */
+function isTimestampHeader(element) {
+  if (!element) return false;
+  
+  const text = element.textContent.trim();
+  if (text.length === 0) return false;
+
+  const isRow = element.getAttribute('role') === 'row' || element.querySelector('[role="row"]');
+  if (isRow) return false;
+
+  return text.includes(':') || 
+         text.includes('AM') || 
+         text.includes('PM') || 
+         text.match(/(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i) ||
+         text.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i);
+}
+
+/**
+ * Walks up the DOM to find the nearest preceding timestamp header.
+ */
+function getNearestTimestampHeader(row) {
+  let current = row.previousElementSibling;
+  while (current) {
+    if (isTimestampHeader(current)) {
+      return current.textContent.trim();
+    }
+    current = current.previousElementSibling;
+  }
+  return "date_unknown";
+}
+
+/**
+ * Extract raw text from the row.
  */
 function getRowTextContent(row) {
   const textElements = row.querySelectorAll('div[dir="auto"], span');
@@ -220,23 +229,22 @@ function getRowTextContent(row) {
 
 /**
  * Generates a stable unique ID for a message that is independent of pagination or scroll-up indices.
- * Relies on: threadId + sender + messageText + timeHeader + consecutiveOccurrenceIndex
+ * Format: threadId + senderId + text + timeHeader + occurrenceIndex
  */
 function generateStableMessageId(threadId, senderId, text, row, timeHeader) {
   let occurrenceIndex = 0;
   let current = row.previousElementSibling;
 
-  // Walk backwards to find how many identical messages by the same sender appear under the same time block
   while (current) {
     if (isTimestampHeader(current)) {
-      break; // Hit boundary of the timestamp block
+      break;
     }
 
     const rowDetails = getRowTextContent(current);
     if (rowDetails) {
       const currentText = rowDetails.text;
       const outgoing = isOutgoingMessage(rowDetails.element);
-      const currentSender = outgoing ? 'me' : `instagram_${activeChatName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const currentSender = outgoing ? 'me' : 'other'; // strictly stable 'me' or 'other'
 
       if (currentText === text && currentSender === senderId) {
         occurrenceIndex++;
@@ -246,15 +254,13 @@ function generateStableMessageId(threadId, senderId, text, row, timeHeader) {
   }
 
   const rawId = `${threadId}_${senderId}_${text}_${timeHeader}_${occurrenceIndex}`;
-  
-  // Safe base64 string signature, trimmed to 80 chars max
   return btoa(unescape(encodeURIComponent(rawId)))
     .replace(/=/g, "")
     .substring(0, 80);
 }
 
 /**
- * Scans the visible container, parses rows, determines uniqueness, and triggers sync payloads.
+ * Scans the visible chat, extracts messages, and fires sync messages.
  */
 function syncAllVisibleMessages(container) {
   if (!activeThreadId) return;
@@ -262,10 +268,9 @@ function syncAllVisibleMessages(container) {
   const chatName = getChatName();
   if (chatName !== activeChatName) {
     activeChatName = chatName;
-    console.log(`[Instagram DM Sync] Set active thread chat name: "${activeChatName}"`);
+    console.log(`[Instagram DM Sync] Active chat display name: "${activeChatName}"`);
   }
 
-  // Find all message rows
   const rows = container.querySelectorAll('div[role="row"]');
   if (rows.length === 0) return;
 
@@ -277,27 +282,24 @@ function syncAllVisibleMessages(container) {
 
     const { text, element } = textDetails;
     const outgoing = isOutgoingMessage(element);
+    
+    // Core Stable Identifiers: 'me' vs 'other'
+    const senderId = outgoing ? 'me' : 'other';
     const senderUsername = outgoing ? 'me' : activeChatName;
-    const senderId = outgoing ? 'me' : `instagram_${activeChatName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
 
-    // Extract the nearest preceding timestamp separator
     const timeHeader = getNearestTimestampHeader(row);
-
-    // Generate a unique, stable message identifier
     const instagramMessageId = generateStableMessageId(activeThreadId, senderId, text, row, timeHeader);
 
-    // Skip if it was already processed in the current session
     if (syncedMessageIds.has(instagramMessageId)) {
       return;
     }
 
-    // Prepare message payload
     newMessages.push({
       instagram_message_id: instagramMessageId,
       sender_id: senderId,
       sender_username: senderUsername,
       text: text,
-      created_at: new Date().toISOString(), // Standard timestamp
+      created_at: new Date().toISOString(),
       metadata: {
         time_header: timeHeader,
         sync_timestamp: new Date().toISOString()
@@ -307,9 +309,8 @@ function syncAllVisibleMessages(container) {
     syncedMessageIds.add(instagramMessageId);
   });
 
-  // Sync new messages
   if (newMessages.length > 0) {
-    console.log(`[Instagram DM Sync] [Real Time] Detected ${newMessages.length} new message(s). Syncing...`);
+    console.log(`[Instagram DM Sync] Scraped ${newMessages.length} unsynced message(s). Syncing...`);
 
     chrome.runtime.sendMessage({
       action: 'sync_thread',
@@ -323,16 +324,16 @@ function syncAllVisibleMessages(container) {
       }
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error("[Instagram DM Sync] Sync dispatch communication failed:", chrome.runtime.lastError.message);
-        // Rollback local sets so it can try again
+        console.error("[Instagram DM Sync] Sync call failed:", chrome.runtime.lastError.message);
+        // Rollback local caches for retry next trigger
         newMessages.forEach(msg => syncedMessageIds.delete(msg.instagram_message_id));
         return;
       }
 
       if (response && response.success) {
-        console.log(`[Instagram DM Sync] Real-time sync complete for ${newMessages.length} message(s).`);
+        console.log(`[Instagram DM Sync] Synced successfully. Messages: ${newMessages.length}`);
       } else {
-        console.error("[Instagram DM Sync] Sync execution failed:", response ? response.error : 'Unknown response');
+        console.error("[Instagram DM Sync] Background sync failed:", response ? response.error : 'Unknown response');
         newMessages.forEach(msg => syncedMessageIds.delete(msg.instagram_message_id));
       }
     });

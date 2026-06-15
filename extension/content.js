@@ -94,23 +94,38 @@ function debounce(func, wait) {
  * Selects the scrollable messages pane in the DOM.
  */
 function findChatContainer() {
-  // 1. Try to find the container relative to active message rows
+  // 1. Try to find the scrollable container relative to a message bubble (highly robust)
+  const bubble = document.querySelector('div[dir="auto"]');
+  if (bubble) {
+    let parent = bubble.parentElement;
+    while (parent && parent !== document.body) {
+      const style = window.getComputedStyle(parent);
+      const overflow = style.overflowY || style.overflow || '';
+      if ((overflow.includes('auto') || overflow.includes('scroll')) && parent.scrollHeight > parent.clientHeight) {
+        return parent;
+      }
+      parent = parent.parentElement;
+    }
+  }
+
+  // 2. Fallback: Find the container relative to active message rows
   const row = document.querySelector('div[role="row"]');
   if (row && row.parentElement) {
     return row.parentElement;
   }
 
-  // 2. Look for semantic ARIA role containers
+  // 3. Fallback: Look for semantic ARIA role containers
   const semanticContainer = document.querySelector('div[role="log"]') || 
                             document.querySelector('div[role="main"] div[role="presentation"]') ||
                             document.querySelector('div[role="main"]');
   if (semanticContainer) return semanticContainer;
 
-  // 3. Fallback: Search for any scrollable content div matching typical height constraints
+  // 4. Fallback: Search for any scrollable content div matching typical height constraints
   try {
     const scrollableDivs = Array.from(document.querySelectorAll('div')).filter(el => {
       const style = window.getComputedStyle(el);
-      return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.clientHeight > 300;
+      const overflow = style.overflowY || style.overflow || '';
+      return (overflow.includes('auto') || overflow.includes('scroll')) && el.scrollHeight > el.clientHeight && el.clientHeight > 200;
     });
     if (scrollableDivs.length > 0) {
       return scrollableDivs[0];
@@ -119,7 +134,7 @@ function findChatContainer() {
     console.error("[Instagram DM Sync] Error searching scrollable containers:", e);
   }
 
-  // 4. Ultimate Fallback: Observes the whole page body if no specific log layout is loaded
+  // 5. Ultimate Fallback: Observes the whole page body if no specific log layout is loaded
   return document.body;
 }
 
@@ -569,6 +584,8 @@ function startHistorySync() {
 
     // Scroll to the very top to force loading older history
     activeContainer.scrollTop = 0;
+    // Dispatch a native scroll event so Instagram's React event handlers trigger the network load
+    activeContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
 
     setTimeout(() => {
       const newScrollHeight = activeContainer.scrollHeight;

@@ -33,7 +33,7 @@ function checkNavigation() {
 
   if (currentThreadId !== activeThreadId) {
     if (currentThreadId) {
-      // Retrieve TARGET_THREAD_ID configuration dynamically from background worker
+      // Retrieve TARGET_THREAD_IDS configuration dynamically from background worker
       chrome.runtime.sendMessage({ action: 'get_config' }, (response) => {
         if (chrome.runtime.lastError) {
           console.error("[Instagram DM Sync] Failed to retrieve configuration from background worker:", chrome.runtime.lastError.message);
@@ -42,9 +42,9 @@ function checkNavigation() {
           return;
         }
 
-        const targetThreadId = response?.targetThreadId;
-        if (targetThreadId && currentThreadId !== targetThreadId) {
-          console.log(`[Instagram DM Sync] Current thread (${currentThreadId}) is NOT the target thread (${targetThreadId}). Real-time sync disabled.`);
+        const targetThreadIds = response?.targetThreadIds || [];
+        if (targetThreadIds.length > 0 && !targetThreadIds.includes(currentThreadId)) {
+          console.log(`[Instagram DM Sync] Current thread (${currentThreadId}) is NOT in the target thread list (${targetThreadIds.join(', ')}). Real-time sync disabled.`);
           cleanupThreadSync();
           // Cache the current thread ID to avoid repeating logs on every navigation check interval
           activeThreadId = currentThreadId;

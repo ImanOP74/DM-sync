@@ -1,11 +1,11 @@
-import { SUPABASE_URL, SUPABASE_ANON_KEY, TARGET_THREAD_ID } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, TARGET_THREAD_IDS } from './config.js';
 
 console.log("[Instagram DM Sync] Background service worker active.");
 
 // Listener for runtime sync dispatches
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'get_config') {
-    sendResponse({ targetThreadId: TARGET_THREAD_ID || null });
+    sendResponse({ targetThreadIds: TARGET_THREAD_IDS || [] });
     return false; // synchronous response
   }
 
@@ -66,9 +66,9 @@ async function handleSyncThread({ conversation, messages }) {
     throw new Error("Supabase credentials not configured inside extension/config.js.");
   }
 
-  // Filter out any non-target thread syncs if TARGET_THREAD_ID is specified
-  if (TARGET_THREAD_ID && conversation.instagram_thread_id !== TARGET_THREAD_ID) {
-    console.log(`[Instagram DM Sync] Sync ignored. Thread ID ${conversation.instagram_thread_id} does not match TARGET_THREAD_ID ${TARGET_THREAD_ID}`);
+  // Filter out any non-target thread syncs if TARGET_THREAD_IDS is specified
+  if (TARGET_THREAD_IDS && TARGET_THREAD_IDS.length > 0 && !TARGET_THREAD_IDS.includes(conversation.instagram_thread_id)) {
+    console.log(`[Instagram DM Sync] Sync ignored. Thread ID ${conversation.instagram_thread_id} does not match any TARGET_THREAD_IDS`);
     return { dbConversationId: null, syncedMessagesCount: 0, skipped: true };
   }
 

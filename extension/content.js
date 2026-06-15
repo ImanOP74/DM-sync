@@ -73,6 +73,7 @@ function cleanupThreadSync() {
     clearInterval(containerPollingTimer);
     containerPollingTimer = null;
   }
+  removeSyncButton();
   activeThreadId = null;
   activeChatName = null;
   syncedMessageIds.clear();
@@ -158,6 +159,9 @@ function initializeThreadSync(threadId) {
         subtree: true
       });
       console.log("[Instagram DM Sync] Real-time MutationObserver attached successfully.");
+      
+      // Render the floating Sync History button for target threads
+      renderSyncButton();
     } else if (pollCount > 20) {
       clearInterval(containerPollingTimer);
       containerPollingTimer = null;
@@ -469,4 +473,143 @@ function syncAllVisibleMessages(container) {
       }
     });
   }
+}
+
+// ==========================================
+// Historical Messages Sync UI & Engine
+// ==========================================
+let syncButton = null;
+let isSyncingHistory = false;
+let autoScrollInterval = null;
+
+function renderSyncButton() {
+  removeSyncButton();
+
+  if (!activeThreadId) return;
+
+  syncButton = document.createElement('button');
+  syncButton.id = 'insta-dm-sync-history-btn';
+  syncButton.innerText = 'Sync History';
+  
+  // Premium glassmorphic Instagram UI styling
+  syncButton.style.position = 'fixed';
+  syncButton.style.top = '72px';
+  syncButton.style.left = '60%';
+  syncButton.style.transform = 'translateX(-50%)';
+  syncButton.style.zIndex = '99999';
+  syncButton.style.backgroundColor = '#0095f6'; // Instagram Brand Blue
+  syncButton.style.color = '#ffffff';
+  syncButton.style.border = 'none';
+  syncButton.style.borderRadius = '20px';
+  syncButton.style.padding = '8px 16px';
+  syncButton.style.fontSize = '12px';
+  syncButton.style.fontWeight = '600';
+  syncButton.style.cursor = 'pointer';
+  syncButton.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.4)';
+  syncButton.style.transition = 'all 0.2s ease-in-out';
+  
+  syncButton.addEventListener('mouseenter', () => {
+    if (!isSyncingHistory) {
+      syncButton.style.backgroundColor = '#1877f2';
+      syncButton.style.transform = 'translateX(-50%) scale(1.05)';
+    }
+  });
+  
+  syncButton.addEventListener('mouseleave', () => {
+    if (!isSyncingHistory) {
+      syncButton.style.backgroundColor = '#0095f6';
+      syncButton.style.transform = 'translateX(-50%) scale(1)';
+    }
+  });
+
+  syncButton.addEventListener('click', toggleHistorySync);
+
+  document.body.appendChild(syncButton);
+  console.log("[Instagram DM Sync] Rendered history sync controls.");
+}
+
+function removeSyncButton() {
+  stopHistorySync();
+  if (syncButton) {
+    syncButton.remove();
+    syncButton = null;
+  }
+}
+
+function toggleHistorySync() {
+  if (isSyncingHistory) {
+    stopHistorySync();
+  } else {
+    startHistorySync();
+  }
+}
+
+function startHistorySync() {
+  const container = findChatContainer();
+  if (!container) {
+    alert("Chat container not ready. Please try again in a moment.");
+    return;
+  }
+
+  isSyncingHistory = true;
+  syncButton.innerText = 'Syncing History... (Click to Stop)';
+  syncButton.style.backgroundColor = '#fa3e3e'; // Alert red to show it is scrolling
+  
+  console.log("[Instagram DM Sync] History backlog sync started.");
+
+  let lastScrollHeight = container.scrollHeight;
+  let consecutiveSameHeightCount = 0;
+
+  autoScrollInterval = setInterval(() => {
+    const activeContainer = findChatContainer();
+    if (!activeContainer) {
+      stopHistorySync();
+      return;
+    }
+
+    // Scroll to the very top to force loading older history
+    activeContainer.scrollTop = 0;
+
+    setTimeout(() => {
+      const newScrollHeight = activeContainer.scrollHeight;
+
+      if (newScrollHeight === lastScrollHeight) {
+        consecutiveSameHeightCount++;
+        // If height doesn't increase for 5 attempts, we reached the first message
+        if (consecutiveSameHeightCount >= 5) {
+          console.log("[Instagram DM Sync] History fully fetched.");
+          if (syncButton) {
+            syncButton.innerText = 'History Synced!';
+            syncButton.style.backgroundColor = '#4caf50'; // Green for success
+          }
+          setTimeout(() => {
+            if (syncButton && !isSyncingHistory) {
+              syncButton.innerText = 'Sync History';
+              syncButton.style.backgroundColor = '#0095f6';
+            }
+          }, 3000);
+          stopHistorySync();
+        }
+      } else {
+        // More history was loaded! Reset counter.
+        consecutiveSameHeightCount = 0;
+        lastScrollHeight = newScrollHeight;
+        console.log(`[Instagram DM Sync] History expanded: ${newScrollHeight}px. Continuing scrolling...`);
+      }
+    }, 1200); // 1.2s DOM load delay
+
+  }, 1800); // Check every 1.8s
+}
+
+function stopHistorySync() {
+  isSyncingHistory = false;
+  if (autoScrollInterval) {
+    clearInterval(autoScrollInterval);
+    autoScrollInterval = null;
+  }
+  if (syncButton) {
+    syncButton.innerText = 'Sync History';
+    syncButton.style.backgroundColor = '#0095f6';
+  }
+  console.log("[Instagram DM Sync] History backlog sync stopped.");
 }

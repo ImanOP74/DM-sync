@@ -85,7 +85,7 @@ async function handleSyncInboxConversations({ conversations }) {
     return { count: 0 };
   }
 
-  const conversationUrl = `${SUPABASE_URL}/rest/v1/conversations`;
+  const conversationUrl = `${SUPABASE_URL}/rest/v1/conversations?on_conflict=conversation_id`;
   const conversationOptions = {
     method: 'POST',
     headers: {
@@ -118,7 +118,7 @@ async function handleSyncThread({ conversation, messages }) {
   }
 
   // --- Step 1: Upsert Conversation ---
-  const conversationUrl = `${SUPABASE_URL}/rest/v1/conversations`;
+  const conversationUrl = `${SUPABASE_URL}/rest/v1/conversations?on_conflict=conversation_id`;
   const conversationOptions = {
     method: 'POST',
     headers: {
@@ -138,14 +138,14 @@ async function handleSyncThread({ conversation, messages }) {
   }
 
   // --- Step 2: Upsert Messages (Related directly via TEXT conversation_id) ---
-  const messagesUrl = `${SUPABASE_URL}/rest/v1/messages`;
+  const messagesUrl = `${SUPABASE_URL}/rest/v1/messages?on_conflict=message_hash`;
   const messagesOptions = {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_ANON_KEY,
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      'Prefer': 'resolution=merge-duplicates, on-conflict=message_hash'
+      'Prefer': 'resolution=merge-duplicates'
     },
     body: JSON.stringify(messages)
   };

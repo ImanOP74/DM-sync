@@ -56,7 +56,6 @@ export default function DashboardHub() {
 
   // Debounce search query to avoid spamming Supabase API on every keystroke
   useEffect(() => {
-    // Skip debounce on mount
     if (isFirstLoad.current) return;
 
     if (searchTimeoutRef.current) {
@@ -110,7 +109,6 @@ export default function DashboardHub() {
           setSyncStatus('connected');
 
           // WebSocket Gap Recovery: If this is a reconnection, pull latest data from DB
-          // to make sure we didn't miss any uploads while the socket was offline.
           if (!isFirstLoad.current) {
             console.log("[Dashboard] WebSocket reconnected. Synchronizing state gaps...");
             fetchConversations(searchQuery);
@@ -139,7 +137,7 @@ export default function DashboardHub() {
           // Append message if it belongs to the currently active conversation
           if (newMsg.conversation_id === activeConversationIdRef.current) {
             setMessages(prev => {
-              if (prev.some(m => m.id === newMsg.id || m.instagram_message_id === newMsg.instagram_message_id)) {
+              if (prev.some(m => m.id === newMsg.id || m.message_hash === newMsg.message_hash)) {
                 return prev;
               }
               return [...prev, newMsg];
@@ -152,10 +150,8 @@ export default function DashboardHub() {
             if (target) {
               const updatedTarget = { 
                 ...target, 
-                updated_at: newMsg.created_at,
-                last_message_preview: newMsg.text,
-                last_message_sender_id: newMsg.sender_id,
-                last_message_time: newMsg.created_at
+                updated_at: newMsg.timestamp,
+                last_message: newMsg.content
               };
               const filtered = prev.filter(c => c.id !== newMsg.conversation_id);
               return [updatedTarget, ...filtered];
@@ -174,8 +170,7 @@ export default function DashboardHub() {
   }, [searchQuery]);
 
   /**
-   * Queries conversations with optional filter. 
-   * Uses server-side sorting and clamps results limit for scalability.
+   * Queries conversations with optional filter.
    */
   async function fetchConversations(queryText = '') {
     try {
@@ -189,7 +184,7 @@ export default function DashboardHub() {
 
       // Perform server-side search if text is provided
       if (queryText.trim()) {
-        query = query.or(`name.ilike.%${queryText}%,instagram_thread_id.like.%${queryText}%`);
+        query = query.or(`username.ilike.%${queryText}%,conversation_id.like.%${queryText}%`);
       }
 
       const { data, error } = await query;
@@ -215,7 +210,7 @@ export default function DashboardHub() {
         .from('messages')
         .select('*')
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true })
+        .order('timestamp', { ascending: true }) // Sorted chronologically
         .limit(100);
 
       if (error) throw error;

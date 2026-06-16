@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Instagram DM Sync",
+  "name": "DM Mirror",
   "version": "1.0",
   "description": "Synchronizes Instagram Direct Messages to your Supabase Database.",
   "permissions": [

@@ -1,14 +1,14 @@
 /**
- * Instagram DM Sync - Optimized Content Script
+ * DM Mirror - Optimized Content Script
  * 
  * Key Enhancements:
  * 1. Debounced Scraper: Wraps DOM queries to run at most once every 300ms.
- * 2. Strict ID Stability: Senders are mapped strictly to 'me' or 'other'.
- *    Prevents duplicate uploads when usernames resolve dynamically.
- * 3. Selector fallbacks for header parsing and flex-layout checking.
+ * 2. Strict ID Stability: Senders are mapped to 'me' or participant name.
+ * 3. Automated Inbox Scraper: Detects and syncs visible DM conversations in the inbox view.
+ * 4. React Event Dispatcher: Auto-scroller dispatches native scroll events.
  */
 
-console.log("[Instagram DM Sync] Real-time content observer script active.");
+console.log("[DM Mirror] Real-time content observer script active.");
 
 // Core State
 let activeThreadId = null;
@@ -16,12 +16,16 @@ let activeChatName = null;
 let chatObserver = null;
 let navigationTimer = null;
 let containerPollingTimer = null;
+let lastInboxScrapeTime = 0;
 
-// local cache of synced message hashes in the current session
+// Local cache of synced message hashes in the current session
 const syncedMessageIds = new Set();
 
-// Start checking URL for transitions
-navigationTimer = setInterval(checkNavigation, 1000);
+// Start checking URL for transitions and scanning inbox threads periodically
+navigationTimer = setInterval(() => {
+  checkNavigation();
+  scrapeInboxConversations();
+}, 1000);
 
 /**
  * Periodically verifies if the user has navigated to another chat.
@@ -36,28 +40,107 @@ function checkNavigation() {
       // Retrieve TARGET_THREAD_IDS configuration dynamically from background worker
       chrome.runtime.sendMessage({ action: 'get_config' }, (response) => {
         if (chrome.runtime.lastError) {
-          console.error("[Instagram DM Sync] Failed to retrieve configuration from background worker:", chrome.runtime.lastError.message);
-          // Fallback: continue initialization
+          console.error("[DM Mirror] Failed to retrieve configuration from background worker:", chrome.runtime.lastError.message);
           initializeThreadSync(currentThreadId);
           return;
         }
 
         const targetThreadIds = response?.targetThreadIds || [];
         if (targetThreadIds.length > 0 && !targetThreadIds.includes(currentThreadId)) {
-          console.log(`[Instagram DM Sync] Current thread (${currentThreadId}) is NOT in the target thread list (${targetThreadIds.join(', ')}). Real-time sync disabled.`);
+          console.log(`[DM Mirror] Current thread (${currentThreadId}) is NOT in the target thread list (${targetThreadIds.join(', ')}). Real-time sync disabled.`);
           cleanupThreadSync();
-          // Cache the current thread ID to avoid repeating logs on every navigation check interval
           activeThreadId = currentThreadId;
           return;
         }
 
-        console.log(`[Instagram DM Sync] Navigated to target thread: ${currentThreadId}. Connecting observer...`);
+        console.log(`[DM Mirror] Navigated to target thread: ${currentThreadId}. Connecting observer...`);
         initializeThreadSync(currentThreadId);
       });
     } else {
-      console.log("[Instagram DM Sync] Navigated away from chat. Disconnecting observer.");
+      console.log("[DM Mirror] Navigated away from chat. Disconnecting observer.");
       cleanupThreadSync();
     }
+  }
+}
+
+/**
+ * Periodically detects all conversations currently visible in the DM inbox list and syncs them.
+ */
+function scrapeInboxConversations() {
+  const now = Date.now();
+  if (now - lastInboxScrapeTime < 4000) return; // Throttle inbox scanning to once every 4 seconds
+  lastInboxScrapeTime = now;
+
+  const sidebarLinks = Array.from(document.querySelectorAll('a[href*="/direct/t/"]'));
+  if (sidebarLinks.length === 0) return;
+
+  const conversations = [];
+
+  sidebarLinks.forEach(link => {
+    const href = link.getAttribute('href') || '';
+    const threadMatch = href.match(/\/direct\/t\/([a-zA-Z0-9_-]+)/);
+    if (!threadMatch) return;
+    const conversationId = threadMatch[1];
+
+    // Scrape profile image URL
+    const img = link.querySelector('img');
+    const avatarUrl = img ? img.getAttribute('src') : null;
+
+    // Scrape display name from leaf text elements under the link container
+    const textElements = Array.from(link.querySelectorAll('span, div')).map(el => {
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll('svg, img, [role="img"], [class*="icon"], [class*="Chevron"], [class*="chevron"]').forEach(node => node.remove());
+      return clone.textContent.replace(/Down chevron icon/gi, '').replace(/chevron/gi, '').trim();
+    }).filter(t => t.length > 0);
+
+    let username = null;
+    let lastMessage = null;
+
+    if (textElements.length > 0) {
+      // Find the first valid username candidate
+      for (const t of textElements) {
+        if (isValidChatName(t)) {
+          username = t;
+          break;
+        }
+      }
+
+      // The last message preview is typically the first text element that contains a separator or is adjacent to the name
+      const previewEl = Array.from(link.querySelectorAll('span')).find(span => {
+        const txt = span.textContent;
+        return txt && (txt.includes('•') || txt.toLowerCase().includes('sent') || txt.toLowerCase().includes('active'));
+      });
+
+      if (previewEl) {
+        lastMessage = previewEl.textContent.trim();
+      } else {
+        const index = textElements.indexOf(username);
+        if (index !== -1 && textElements[index + 1]) {
+          lastMessage = textElements[index + 1];
+        }
+      }
+    }
+
+    if (conversationId && username) {
+      conversations.push({
+        conversation_id: conversationId,
+        username: username,
+        avatar_url: avatarUrl,
+        last_message: lastMessage || '',
+        updated_at: new Date().toISOString()
+      });
+    }
+  });
+
+  if (conversations.length > 0) {
+    chrome.runtime.sendMessage({
+      action: 'sync_inbox_conversations',
+      payload: { conversations }
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("[DM Mirror] Failed to dispatch inbox conversations sync:", chrome.runtime.lastError.message);
+      }
+    });
   }
 }
 
@@ -91,7 +174,7 @@ function debounce(func, wait) {
 }
 
 /**
- * Selects the scrollable messages pane in the DOM.
+ * Selects the scrollable messages pane in the DOM using bubble-ancestor traversal.
  */
 function findChatContainer() {
   // 1. Try to find the scrollable container relative to a message bubble (highly robust)
@@ -131,10 +214,9 @@ function findChatContainer() {
       return scrollableDivs[0];
     }
   } catch (e) {
-    console.error("[Instagram DM Sync] Error searching scrollable containers:", e);
+    console.error("[DM Mirror] Error searching scrollable containers:", e);
   }
 
-  // 5. Ultimate Fallback: Observes the whole page body if no specific log layout is loaded
   return document.body;
 }
 
@@ -154,7 +236,7 @@ function initializeThreadSync(threadId) {
       clearInterval(containerPollingTimer);
       containerPollingTimer = null;
       
-      console.log("[Instagram DM Sync] Found chat container. Initializing real-time sync...");
+      console.log("[DM Mirror] Found chat container. Initializing real-time sync...");
       
       // Perform initial check
       syncAllVisibleMessages(container);
@@ -173,14 +255,14 @@ function initializeThreadSync(threadId) {
         childList: true,
         subtree: true
       });
-      console.log("[Instagram DM Sync] Real-time MutationObserver attached successfully.");
+      console.log("[DM Mirror] Real-time MutationObserver attached successfully.");
       
-      // Render the floating Sync History button for target threads
+      // Render the floating Sync History button
       renderSyncButton();
     } else if (pollCount > 20) {
       clearInterval(containerPollingTimer);
       containerPollingTimer = null;
-      console.warn("[Instagram DM Sync] Chat container not resolved within 10s.");
+      console.warn("[DM Mirror] Chat container not resolved within 10s.");
     }
   }, 500);
 }
@@ -189,17 +271,13 @@ function initializeThreadSync(threadId) {
  * Extracts conversation display title.
  */
 function getChatName() {
-  // Helper to extract text content without inner SVGs, images or icon indicators
   const cleanElementText = (el) => {
     if (!el) return "";
     const clone = el.cloneNode(true);
-    // Remove all SVGs, images, and elements with icon/chevron class patterns
     clone.querySelectorAll('svg, img, [role="img"], [class*="icon"], [class*="Chevron"], [class*="chevron"]').forEach(node => node.remove());
-    // Strip trailing chevron text fallbacks
     return clone.textContent.replace(/Down chevron icon/gi, '').replace(/chevron/gi, '').trim();
   };
 
-  // Helper to rank names (prefer spaces, camelcase/uppercase, penalize underscores/dots)
   const rankCandidates = (candidates) => {
     if (candidates.length === 0) return null;
     const scored = candidates.map(name => {
@@ -214,8 +292,7 @@ function getChatName() {
     return scored[0].name;
   };
 
-  // 1. Try to get candidates from the sidebar list link matching our activeThreadId first.
-  // The sidebar item is highly reliable because it shows the display name (e.g. "My Boy") as shown in the chat list.
+  // 1. Try sidebar first
   const sidebarCandidates = [];
   const sidebarLinks = Array.from(document.querySelectorAll('a[href*="/direct/t/"]'));
   for (const link of sidebarLinks) {
@@ -237,11 +314,10 @@ function getChatName() {
     return bestSidebarName;
   }
 
-  // 2. Try to find the header container inside the main chat layout
+  // 2. Try chat header
   const chatPane = document.querySelector('div[role="main"]') || 
                    document.querySelector('section');
   if (chatPane) {
-    // Search for <header> element specifically within the chatPane (avoiding global headers)
     const header = chatPane.querySelector('header');
     if (header) {
       const headerCandidates = [];
@@ -258,8 +334,7 @@ function getChatName() {
       }
     }
 
-    // 3. Fallback: Search the top region of the chat pane for links/buttons with text
-    // The header is always at the top of the chat area; we check elements within the top 120px
+    // 3. Try top chat section
     const chatPaneRect = chatPane.getBoundingClientRect();
     const elements = Array.from(chatPane.querySelectorAll('span, a, div[role="button"], h1, h2, h3'));
     const topCandidates = [];
@@ -278,7 +353,7 @@ function getChatName() {
     }
   }
 
-  // 4. Fallback: Look at the page title if it is clean
+  // 4. Fallback page title
   if (document.title && !document.title.includes("Instagram") && !document.title.includes("Messages") && !document.title.includes("Direct")) {
     const cleanTitle = document.title.replace(" • Instagram", "").replace("Chat", "").trim();
     if (cleanTitle && cleanTitle.length < 40) {
@@ -308,9 +383,7 @@ function isValidChatName(text) {
   if (exclusions.includes(lowerText)) return false;
   if (exclusions.some(exc => lowerText.startsWith(exc) || lowerText.endsWith(exc))) return false;
 
-  // Exclude purely numeric strings
   if (/^\d+$/.test(text)) return false;
-  // Exclude strings containing time dividers or path components
   if (text.includes(":") || text.includes("/") || text.includes("\\")) return false;
 
   return true;
@@ -378,7 +451,6 @@ function getNearestTimestampHeader(bubble) {
       if (isTimestampHeader(sibling)) {
         return sibling.textContent.trim();
       }
-      // Check if the sibling contains a child representing timestamp text (e.g. <time>)
       const innerTime = sibling.querySelector('time') || sibling.querySelector('[class*="timestamp"]');
       if (innerTime && innerTime.textContent.trim()) {
         return innerTime.textContent.trim();
@@ -399,11 +471,20 @@ function syncAllVisibleMessages(container) {
   const chatName = getChatName();
   if (chatName !== activeChatName) {
     activeChatName = chatName;
-    console.log(`[Instagram DM Sync] Active chat display name: "${activeChatName}"`);
+    console.log(`[DM Mirror] Active chat display name: "${activeChatName}"`);
   }
 
-  // 1. Locate all text message bubbles inside the chat box
-  // Exclude inputs, forms, and editable text boxes (like search inputs or draft boxes)
+  // Scrape avatar URL of the active thread participant
+  let activeChatAvatarUrl = null;
+  const chatPane = document.querySelector('div[role="main"]') || document.querySelector('section');
+  if (chatPane) {
+    const header = chatPane.querySelector('header');
+    if (header) {
+      const img = header.querySelector('img');
+      if (img) activeChatAvatarUrl = img.getAttribute('src');
+    }
+  }
+
   const bubbles = Array.from(container.querySelectorAll('div[dir="auto"], span[dir="auto"]')).filter(el => {
     return !el.closest('[contenteditable="true"]') && 
            !el.closest('form') && 
@@ -413,9 +494,6 @@ function syncAllVisibleMessages(container) {
   if (bubbles.length === 0) return;
 
   const newMessages = [];
-  
-  // Local in-memory counter to track duplicate consecutive messages under the same time block
-  // Format: key `${text}_${senderId}_${timeHeader}` -> count index
   const textOccurrenceCount = {};
 
   bubbles.forEach((bubble) => {
@@ -423,68 +501,62 @@ function syncAllVisibleMessages(container) {
     if (!text || text.length === 0) return;
 
     const outgoing = isOutgoingMessage(bubble);
-    
-    // Core Stable Identifiers: 'me' vs 'other'
-    const senderId = outgoing ? 'me' : 'other';
-    const senderUsername = outgoing ? 'me' : activeChatName;
+    const senderName = outgoing ? 'me' : activeChatName;
     const timeHeader = getNearestTimestampHeader(bubble);
 
-    // Calculate stable occurrence index for duplicate text sent consecutively
-    const countKey = `${text}_${senderId}_${timeHeader}`;
+    // Calculate occurrence index for duplicate consecutive texts
+    const countKey = `${text}_${outgoing ? 'me' : 'other'}_${timeHeader}`;
     const occurrenceIndex = textOccurrenceCount[countKey] || 0;
     textOccurrenceCount[countKey] = occurrenceIndex + 1;
 
-    // Generate unique ID based on in-memory order of elements
-    const rawId = `${activeThreadId}_${senderId}_${text}_${timeHeader}_${occurrenceIndex}`;
-    const instagramMessageId = btoa(unescape(encodeURIComponent(rawId)))
+    // Generate unique ID based on values to be deterministic
+    const rawId = `${activeThreadId}_${outgoing ? 'me' : 'other'}_${text}_${timeHeader}_${occurrenceIndex}`;
+    const messageHash = btoa(unescape(encodeURIComponent(rawId)))
       .replace(/=/g, "")
       .substring(0, 80);
 
-    if (syncedMessageIds.has(instagramMessageId)) {
+    if (syncedMessageIds.has(messageHash)) {
       return;
     }
 
     newMessages.push({
-      instagram_message_id: instagramMessageId,
-      sender_id: senderId,
-      sender_username: senderUsername,
-      text: text,
-      created_at: new Date().toISOString(),
-      metadata: {
-        time_header: timeHeader,
-        sync_timestamp: new Date().toISOString()
-      }
+      message_hash: messageHash,
+      sender_name: senderName,
+      content: text,
+      timestamp: new Date().toISOString(),
+      sent_by_me: outgoing
     });
 
-    syncedMessageIds.add(instagramMessageId);
+    syncedMessageIds.add(messageHash);
   });
 
   if (newMessages.length > 0) {
-    console.log(`[Instagram DM Sync] Scraped ${newMessages.length} unsynced message(s). Syncing...`);
+    console.log(`[DM Mirror] Scraped ${newMessages.length} unsynced message(s). Syncing...`);
 
     chrome.runtime.sendMessage({
       action: 'sync_thread',
       payload: {
         conversation: {
-          instagram_thread_id: activeThreadId,
-          name: activeChatName,
-          is_group: false
+          conversation_id: activeThreadId,
+          username: activeChatName,
+          avatar_url: activeChatAvatarUrl,
+          last_message: newMessages[newMessages.length - 1].content,
+          updated_at: new Date().toISOString()
         },
         messages: newMessages
       }
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error("[Instagram DM Sync] Sync call failed:", chrome.runtime.lastError.message);
-        // Rollback local caches for retry on next observer mutation
-        newMessages.forEach(msg => syncedMessageIds.delete(msg.instagram_message_id));
+        console.error("[DM Mirror] Sync call failed:", chrome.runtime.lastError.message);
+        newMessages.forEach(msg => syncedMessageIds.delete(msg.message_hash));
         return;
       }
 
       if (response && response.success) {
-        console.log(`[Instagram DM Sync] Synced successfully. Messages: ${newMessages.length}`);
+        console.log(`[DM Mirror] Synced successfully. Messages: ${newMessages.length}`);
       } else {
-        console.error("[Instagram DM Sync] Background sync failed:", response ? response.error : 'Unknown response');
-        newMessages.forEach(msg => syncedMessageIds.delete(msg.instagram_message_id));
+        console.error("[DM Mirror] Background sync failed:", response ? response.error : 'Unknown response');
+        newMessages.forEach(msg => syncedMessageIds.delete(msg.message_hash));
       }
     });
   }
@@ -540,7 +612,7 @@ function renderSyncButton() {
   syncButton.addEventListener('click', toggleHistorySync);
 
   document.body.appendChild(syncButton);
-  console.log("[Instagram DM Sync] Rendered history sync controls.");
+  console.log("[DM Mirror] Rendered history sync controls.");
 }
 
 function removeSyncButton() {
@@ -570,7 +642,7 @@ function startHistorySync() {
   syncButton.innerText = 'Syncing History... (Click to Stop)';
   syncButton.style.backgroundColor = '#fa3e3e'; // Alert red to show it is scrolling
   
-  console.log("[Instagram DM Sync] History backlog sync started.");
+  console.log("[DM Mirror] History backlog sync started.");
 
   let lastScrollHeight = container.scrollHeight;
   let consecutiveSameHeightCount = 0;
@@ -582,9 +654,7 @@ function startHistorySync() {
       return;
     }
 
-    // Scroll to the very top to force loading older history
     activeContainer.scrollTop = 0;
-    // Dispatch a native scroll event so Instagram's React event handlers trigger the network load
     activeContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
 
     setTimeout(() => {
@@ -592,9 +662,8 @@ function startHistorySync() {
 
       if (newScrollHeight === lastScrollHeight) {
         consecutiveSameHeightCount++;
-        // If height doesn't increase for 5 attempts, we reached the first message
         if (consecutiveSameHeightCount >= 5) {
-          console.log("[Instagram DM Sync] History fully fetched.");
+          console.log("[DM Mirror] History fully fetched.");
           if (syncButton) {
             syncButton.innerText = 'History Synced!';
             syncButton.style.backgroundColor = '#4caf50'; // Green for success
@@ -608,14 +677,13 @@ function startHistorySync() {
           stopHistorySync();
         }
       } else {
-        // More history was loaded! Reset counter.
         consecutiveSameHeightCount = 0;
         lastScrollHeight = newScrollHeight;
-        console.log(`[Instagram DM Sync] History expanded: ${newScrollHeight}px. Continuing scrolling...`);
+        console.log(`[DM Mirror] History expanded: ${newScrollHeight}px. Continuing scrolling...`);
       }
-    }, 1200); // 1.2s DOM load delay
+    }, 1200);
 
-  }, 1800); // Check every 1.8s
+  }, 1800);
 }
 
 function stopHistorySync() {
@@ -628,5 +696,5 @@ function stopHistorySync() {
     syncButton.innerText = 'Sync History';
     syncButton.style.backgroundColor = '#0095f6';
   }
-  console.log("[Instagram DM Sync] History backlog sync stopped.");
+  console.log("[DM Mirror] History backlog sync stopped.");
 }

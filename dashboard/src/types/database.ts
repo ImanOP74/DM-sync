@@ -1,29 +1,20 @@
 export interface Conversation {
   id: string;
-  instagram_thread_id: string;
-  name: string | null;
-  is_group: boolean;
-  metadata: Record<string, any>;
-  
-  // Cached Last Message preview columns (denormalized)
-  last_message_preview: string | null;
-  last_message_time: string | null;
-  last_message_sender_id: string | null;
-
+  conversation_id: string; // Instagram Native thread ID
+  username: string | null;   // Participant display name / username
+  avatar_url: string | null; // Profile picture URL
+  last_message: string | null; // Denormalized preview text
   created_at: string;
   updated_at: string;
 }
 
 export interface Message {
   id: string;
-  conversation_id: string;
-  instagram_message_id: string;
-  sender_id: string; // 'me' or 'other'
-  sender_username: string | null; // actual profile display name
-  text: string | null;
-  media_url: string | null;
-  media_type: string | null;
-  metadata: Record<string, any>;
-  created_at: string;
-  synced_at: string;
+  conversation_id: string; // Foreign key referencing conversations.id UUID
+  message_hash: string;    // Unique deduplication hash signature
+  sender_name: string | null; // Sender name
+  content: string | null;  // Message text content
+  timestamp: string;       // Native Instagram message timestamp
+  sent_by_me: boolean;     // Sent by user check
+  created_at: string;      // Database insertion timestamp
 }

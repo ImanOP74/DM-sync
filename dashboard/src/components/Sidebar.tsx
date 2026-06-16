@@ -88,7 +88,7 @@ export default function Sidebar({
               <InstagramIcon size={20} className="text-white" />
             </div>
             <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-              InstaSync
+              DM Mirror
             </h1>
           </div>
           
@@ -139,7 +139,7 @@ export default function Sidebar({
             </p>
             {!searchQuery && (
               <p className="text-xs text-zinc-600 mt-1">
-                Open a chat on Instagram with your sync extension enabled to start indexing.
+                Open a chat on Instagram with your sync extension enabled to start mirroring.
               </p>
             )}
           </div>
@@ -156,37 +156,45 @@ export default function Sidebar({
                     : 'hover:bg-zinc-900/50'
                 }`}
               >
-                {/* Profile Circle */}
-                <div className={`flex items-center justify-center w-11 h-11 rounded-full bg-gradient-to-tr ${getAvatarGradient(conv.id)} text-white font-bold text-sm shadow-md flex-shrink-0`}>
-                  {getInitials(conv.name)}
-                </div>
+                {/* Profile Circle / Avatar Image */}
+                {conv.avatar_url ? (
+                  <img 
+                    src={conv.avatar_url} 
+                    alt={conv.username || 'Profile avatar'} 
+                    className="w-11 h-11 rounded-full object-cover shadow-md flex-shrink-0 border border-zinc-800"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className={`flex items-center justify-center w-11 h-11 rounded-full bg-gradient-to-tr ${getAvatarGradient(conv.id)} text-white font-bold text-sm shadow-md flex-shrink-0`}>
+                    {getInitials(conv.username)}
+                  </div>
+                )}
 
                 {/* Details */}
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h3 className="font-semibold text-sm truncate text-zinc-100">
-                      {conv.name || `User ${conv.instagram_thread_id.substring(0, 8)}`}
+                      {conv.username || `User ${conv.conversation_id.substring(0, 8)}`}
                     </h3>
                     <span className="text-[10px] text-zinc-500 whitespace-nowrap">
-                      {formatDate(conv.last_message_time || conv.updated_at)}
+                      {formatDate(conv.updated_at)}
                     </span>
                   </div>
                   
                   {/* Caching preview */}
                   <p className="text-xs text-zinc-400 truncate pr-2">
-                    {conv.last_message_preview ? (
+                    {conv.last_message ? (
                       <span className="text-zinc-300">
-                        {conv.last_message_sender_id === 'me' ? 'You: ' : ''}
-                        {conv.last_message_preview}
+                        {conv.last_message}
                       </span>
                     ) : (
-                      `ID: ${conv.instagram_thread_id}`
+                      `ID: ${conv.conversation_id}`
                     )}
                   </p>
                   
                   <div className="flex items-center gap-1 mt-1">
                     <span className="inline-block w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                    <span className="text-[9px] text-zinc-500 tracking-wide uppercase">Sync Active</span>
+                    <span className="text-[9px] text-zinc-500 tracking-wide uppercase">Active</span>
                   </div>
                 </div>
               </div>

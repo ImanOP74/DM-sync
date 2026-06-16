@@ -70,18 +70,28 @@ export default function ChatArea({
             </button>
           )}
           
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-tr ${getAvatarGradient(selectedConversation.id)} text-white font-semibold text-xs shadow-md`}>
-            {getInitials(selectedConversation.name)}
-          </div>
+          {/* Header Profile Image / Avatar */}
+          {selectedConversation.avatar_url ? (
+            <img 
+              src={selectedConversation.avatar_url} 
+              alt={selectedConversation.username || 'Profile avatar'} 
+              className="w-10 h-10 rounded-full object-cover shadow-md border border-zinc-800"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <div className={`flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-tr ${getAvatarGradient(selectedConversation.id)} text-white font-semibold text-xs shadow-md`}>
+              {getInitials(selectedConversation.username)}
+            </div>
+          )}
           
           <div>
             <h2 className="font-semibold text-sm text-zinc-100">
-              {selectedConversation.name || 'Conversation Detail'}
+              {selectedConversation.username || 'Conversation Detail'}
             </h2>
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
               <span className="text-[10px] text-zinc-400">
-                Instagram ID: {selectedConversation.instagram_thread_id}
+                Instagram ID: {selectedConversation.conversation_id}
               </span>
             </div>
           </div>
@@ -103,25 +113,19 @@ export default function ChatArea({
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8">
             <MessageSquare className="text-zinc-800 mb-2" size={48} />
-            <p className="text-sm text-zinc-400 font-medium">No messages synchronized yet</p>
+            <p className="text-sm text-zinc-400 font-medium">No messages mirrored yet</p>
             <p className="text-xs text-zinc-600 max-w-xs mt-1">
-              New messages sent or received in this Instagram thread will sync here instantly.
+              New messages synced by the extension for this conversation will appear here instantly.
             </p>
           </div>
         ) : (
           messages.map((msg) => {
-            const isMe = msg.sender_id === 'me';
+            const isMe = msg.sent_by_me;
             return (
               <div 
                 key={msg.id} 
                 className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}
               >
-                {!isMe && selectedConversation.is_group && (
-                  <span className="text-[10px] text-zinc-500 ml-2 mb-0.5">
-                    {msg.sender_username || 'other'}
-                  </span>
-                )}
-
                 <div 
                   className={`max-w-[80%] sm:max-w-[70%] rounded-2xl px-4 py-2 text-sm shadow-md break-words whitespace-pre-wrap leading-relaxed transition-all ${
                     isMe 
@@ -129,11 +133,11 @@ export default function ChatArea({
                       : 'bg-zinc-800 text-zinc-100 rounded-bl-none border border-zinc-700/30'
                   }`}
                 >
-                  {msg.text}
+                  {msg.content}
                 </div>
 
                 <span className="text-[9px] text-zinc-500 mt-1 mx-2">
-                  {formatTime(msg.created_at)}
+                  {formatTime(msg.timestamp)}
                 </span>
               </div>
             );
@@ -153,6 +157,6 @@ export default function ChatArea({
         </div>
       </div>
 
-    </div>
+      </div>
   );
 }

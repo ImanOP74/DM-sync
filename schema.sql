@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     message_hash TEXT NOT NULL UNIQUE,         -- Deterministic message hash for deduplication
+    sender_type TEXT NOT NULL DEFAULT 'other', -- 'me' or 'other' (sender ownership)
     sender_name TEXT,                          -- Sender's visible name
     sender_username TEXT,                      -- Sender's Instagram username (if available)
     content TEXT,                              -- Message content

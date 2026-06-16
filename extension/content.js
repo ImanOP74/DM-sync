@@ -523,6 +523,126 @@ function findSenderUsername(bubble, container) {
 }
 
 /**
+ * Classifies and filters out non-chat elements (reactions, story mentions, system events, etc.).
+ */
+function shouldIgnoreMessage(text, element) {
+  text = text.trim();
+  if (!text) return true;
+
+  // 1. Filter out reaction notifications and activity statuses
+  const ignoredPhrases = [
+    /mentioned you in their story/i,
+    /replied to your story/i,
+    /shared a photo/i,
+    /replied to yourself/i,
+    /reacted\s+.+\s+to\s+your\s+message/i,
+    /liked\s+a\s+message/i,
+    /missed\s+a\s+video\s+call/i,
+    /video\s+call\s+ended/i,
+    /missed\s+a\s+call/i,
+    /call\s+ended/i,
+    /voice\s+call\s+ended/i,
+    /audio\s+call\s+ended/i,
+    /started\s+a\s+video\s+call/i,
+    /started\s+an\s+audio\s+call/i,
+    /active\s+now/i,
+    /active\s+\d+/i,
+    /seen/i,
+    /delivered/i
+  ];
+
+  if (ignoredPhrases.some(regex => regex.test(text))) {
+    return true;
+  }
+
+  // 2. Ignore DOM reaction overlays (emoji badges attached to message bubbles)
+  const isReactionBadge = element.closest('[class*="reaction"]') || 
+                          element.closest('[class*="Reaction"]') || 
+                          element.closest('[aria-label*="reaction"]') ||
+                          element.closest('[aria-label*="Reaction"]') ||
+                          element.closest('[role="button"]') ||
+                          element.getAttribute('role') === 'button';
+
+  const emojiOnlyRegex = /^[\p{Emoji_Presentation}\p{Emoji_Modifier_Base}\p{Emoji_Component}\p{Extended_Pictographic}\s]+$/u;
+  
+  if (isReactionBadge && text.length <= 5 && emojiOnlyRegex.test(text)) {
+    return true;
+  }
+
+  // 3. Ignore typing indicator or read-receipts
+  if (
+    element.closest('[class*="typing"]') ||
+    element.closest('[class*="seen"]') ||
+    text === 'Seen'
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Scrapes display name and username handle of the chat partner from the active chat header.
+ */
+function getChatPartnerDetails() {
+  const details = {
+    name: null,
+    username: null
+  };
+
+  const chatPane = document.querySelector('div[role="main"]') || document.querySelector('section');
+  if (chatPane) {
+    const header = chatPane.querySelector('header');
+    if (header) {
+      // Extract clean text from all span, link, or div elements
+      const elements = Array.from(header.querySelectorAll('span, a, div[role="button"]'))
+        .map(el => {
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll('svg, img, [role="img"], [class*="icon"]').forEach(n => n.remove());
+          return clone.textContent.trim();
+        })
+        .filter(t => t.length > 0 && isValidChatName(t));
+
+      // Dedup elements list while keeping order
+      const uniqueText = [...new Set(elements)];
+
+      if (uniqueText.length >= 2) {
+        // Typically, display name is first (can contain spaces and capitals), 
+        // and handle is second (no spaces, lowercase, dots, underscores).
+        const candidate1 = uniqueText[0];
+        const candidate2 = uniqueText[1];
+        
+        const isHandle = (str) => /^[a-z0-9_.]+$/.test(str);
+        
+        if (isHandle(candidate2) && !isHandle(candidate1)) {
+          details.name = candidate1;
+          details.username = candidate2;
+        } else if (isHandle(candidate1) && !isHandle(candidate2)) {
+          details.name = candidate2;
+          details.username = candidate1;
+        } else {
+          details.name = candidate1;
+          details.username = candidate2;
+        }
+      } else if (uniqueText.length === 1) {
+        details.name = uniqueText[0];
+        details.username = uniqueText[0];
+      }
+    }
+  }
+
+  // Fallback to activeChatName if details are not fully resolved
+  if (!details.name) {
+    details.name = activeChatName || getChatName();
+  }
+  if (!details.username) {
+    details.username = details.name;
+  }
+
+  return details;
+}
+
+/**
  * Scans the visible chat log, extracts messages, and fires sync messages.
  */
 function syncAllVisibleMessages(container) {
@@ -545,11 +665,26 @@ function syncAllVisibleMessages(container) {
     }
   }
 
+  // Scrape chat partner details
+  const partner = getChatPartnerDetails();
+
   const bubbles = Array.from(container.querySelectorAll('div[dir="auto"], span[dir="auto"]')).filter(el => {
-    return !el.closest('[contenteditable="true"]') && 
-           !el.closest('form') && 
-           !el.closest('[role="textbox"]') &&
-           !isTimestampHeader(el);
+    // Basic structural exclusions
+    if (el.closest('[contenteditable="true"]') || el.closest('form') || el.closest('[role="textbox"]')) {
+      return false;
+    }
+    // Exclude timestamp headers
+    if (isTimestampHeader(el)) {
+      return false;
+    }
+    
+    // Ignore reactions, call events, story mentions, and read receipts
+    const text = el.textContent.trim();
+    if (shouldIgnoreMessage(text, el)) {
+      return false;
+    }
+
+    return true;
   });
 
   if (bubbles.length === 0) return;
@@ -558,25 +693,40 @@ function syncAllVisibleMessages(container) {
   const textOccurrenceCount = {};
 
   bubbles.forEach((bubble) => {
-    const text = bubble.textContent.trim();
-    if (!text || text.length === 0) return;
+    const msgText = bubble.textContent.trim();
+    if (!msgText || msgText.length === 0) return;
 
     const outgoing = isOutgoingMessage(bubble);
-    const senderName = outgoing ? 'me' : activeChatName;
+    const senderType = outgoing ? 'me' : 'other';
     
-    // Scrape sender username: check DOM above bubble or fall back
-    const scrapedUsername = outgoing ? 'me' : findSenderUsername(bubble, container);
-    const senderUsername = scrapedUsername || senderName;
+    let senderName = '';
+    let senderUsername = '';
+
+    if (outgoing) {
+      senderName = 'me';
+      senderUsername = 'me';
+    } else {
+      // Check if this is a group chat and has sender name above bubble
+      const groupUsername = findSenderUsername(bubble, container);
+      if (groupUsername) {
+        senderUsername = groupUsername;
+        senderName = groupUsername;
+      } else {
+        // Fall back to resolved 1-on-1 partner details
+        senderName = partner.name || activeChatName;
+        senderUsername = partner.username || partner.name || activeChatName;
+      }
+    }
     
     const timeHeader = getNearestTimestampHeader(bubble);
 
     // Calculate occurrence index for duplicate consecutive texts
-    const countKey = `${text}_${outgoing ? 'me' : 'other'}_${timeHeader}`;
+    const countKey = `${msgText}_${outgoing ? 'me' : 'other'}_${timeHeader}`;
     const occurrenceIndex = textOccurrenceCount[countKey] || 0;
     textOccurrenceCount[countKey] = occurrenceIndex + 1;
 
     // Generate unique ID based on values to be deterministic
-    const rawId = `${activeThreadId}_${outgoing ? 'me' : 'other'}_${text}_${timeHeader}_${occurrenceIndex}`;
+    const rawId = `${activeThreadId}_${outgoing ? 'me' : 'other'}_${msgText}_${timeHeader}_${occurrenceIndex}`;
     const messageHash = btoa(unescape(encodeURIComponent(rawId)))
       .replace(/=/g, "")
       .substring(0, 80);
@@ -588,9 +738,10 @@ function syncAllVisibleMessages(container) {
     newMessages.push({
       conversation_id: activeThreadId, // TEXT ID directly linked
       message_hash: messageHash,
+      sender_type: senderType,
       sender_name: senderName,
       sender_username: senderUsername,
-      content: text,
+      content: msgText,
       timestamp: new Date().toISOString(),
       sent_by_me: outgoing
     });

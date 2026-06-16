@@ -514,8 +514,10 @@ export default function ChatArea({
 
                   {/* Header Title (Group chats sender name display) */}
                   {!group.isMe && (
-                    <span className="text-[10px] text-zinc-500 font-bold ml-14 mb-1 tracking-wider uppercase block">
-                      {group.senderUsername || group.senderName}
+                    <span className="text-[10px] text-zinc-550 font-bold ml-14 mb-1 tracking-wider uppercase block">
+                      {group.senderName === group.senderUsername 
+                        ? group.senderName 
+                        : `${group.senderName} (@${group.senderUsername})`}
                     </span>
                   )}
 
@@ -539,7 +541,7 @@ export default function ChatArea({
                         {!group.isMe && (
                           <div className="w-10 flex-shrink-0 flex justify-center">
                             {isLast ? (
-                              selectedConversation.avatar_url ? (
+                              selectedConversation.avatar_url && selectedConversation.conversation_name === group.senderName ? (
                                 <img 
                                   src={selectedConversation.avatar_url} 
                                   alt="Sender" 
@@ -547,8 +549,8 @@ export default function ChatArea({
                                   referrerPolicy="no-referrer"
                                 />
                               ) : (
-                                <div className={`flex items-center justify-center w-7 h-7 rounded-full bg-gradient-to-tr ${getAvatarGradient(selectedConversation.conversation_id)} text-white font-bold text-[9px] shadow-sm`}>
-                                  {getInitials(selectedConversation.conversation_name)}
+                                <div className={`flex items-center justify-center w-7 h-7 rounded-full bg-gradient-to-tr ${getAvatarGradient(group.senderUsername)} text-white font-bold text-[9px] shadow-sm`}>
+                                  {getInitials(group.senderName)}
                                 </div>
                               )
                             ) : null}

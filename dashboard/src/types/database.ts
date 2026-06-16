@@ -14,6 +14,7 @@ export interface Message {
   id: string;
   conversation_id: string;       // References conversations.conversation_id directly (string)
   message_hash: string;          // Deduplication hash signature
+  sender_type: 'me' | 'other';   // Sender type indicator
   sender_name: string | null;     // Sender name
   sender_username: string | null; // Sender Instagram username
   content: string | null;        // Message body content

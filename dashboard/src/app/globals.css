@@ -35,3 +35,22 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46; /* zinc-700 */
 }
+
+/* Custom Mark / Highlight Styling */
+mark {
+  background-color: rgba(236, 72, 153, 0.4); /* pink-500 with opacity */
+  color: #ffffff;
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 500;
+}
+
+/* Shimmer/Pulse Animations for stats */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

@@ -4,6 +4,8 @@ export interface Conversation {
   conversation_name: string | null; // Display name of the chat
   avatar_url: string | null;        // Participant's avatar photo URL
   last_message: string | null;      // Cached latest message preview
+  is_pinned: boolean;               // Pin conversation to top
+  is_unread: boolean;               // Conversation has unread messages
   created_at: string;
   updated_at: string;
 }
@@ -17,5 +19,6 @@ export interface Message {
   content: string | null;        // Message body content
   timestamp: string;             // Native Instagram message timestamp
   sent_by_me: boolean;           // Outgoing message flag
+  is_bookmarked: boolean;        // Bookmarked message indicator
   created_at: string;            // Database insertion timestamp
 }

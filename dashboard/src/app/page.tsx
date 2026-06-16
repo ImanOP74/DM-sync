@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Conversation, Message } from '@/types/database';
 import Sidebar from '@/components/Sidebar';
@@ -13,12 +13,17 @@ export default function DashboardHub() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'pinned' | 'unread'>('all');
   
   // UI States
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isMobileView, setIsMobileView] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'connected' | 'error' | 'connecting'>('connecting');
+
+  // Pagination states
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Refs for tracking connection state & synchronization closures (tracked by native string conversation_id)
   const activeConversationIdRef = useRef<string | null>(null);
@@ -32,6 +37,7 @@ export default function DashboardHub() {
       loadMessages(selectedConversation.conversation_id);
     } else {
       setMessages([]);
+      setHasMore(false);
     }
   }, [selectedConversation]);
 
@@ -142,6 +148,11 @@ export default function DashboardHub() {
               }
               return [...prev, newMsg];
             });
+          } else {
+            // Mark other conversation as unread locally
+            setConversations(prev => prev.map(c => 
+              c.conversation_id === newMsg.conversation_id ? { ...c, is_unread: true } : c
+            ));
           }
 
           // Trigger a quick reorder on the conversations list
@@ -151,7 +162,8 @@ export default function DashboardHub() {
               const updatedTarget = { 
                 ...target, 
                 updated_at: newMsg.timestamp,
-                last_message: newMsg.content
+                last_message: newMsg.content,
+                is_unread: newMsg.conversation_id !== activeConversationIdRef.current ? true : target.is_unread
               };
               const filtered = prev.filter(c => c.conversation_id !== newMsg.conversation_id);
               return [updatedTarget, ...filtered];
@@ -170,7 +182,7 @@ export default function DashboardHub() {
   }, [searchQuery]);
 
   /**
-   * Queries conversations with optional filter.
+   * Queries conversations.
    */
   async function fetchConversations(queryText = '') {
     try {
@@ -179,8 +191,7 @@ export default function DashboardHub() {
       let query = supabase
         .from('conversations')
         .select('*')
-        .order('updated_at', { ascending: false })
-        .limit(30);
+        .limit(100);
 
       // Perform server-side search if text is provided
       if (queryText.trim()) {
@@ -201,7 +212,7 @@ export default function DashboardHub() {
   }
 
   /**
-   * Loads the message history for a chosen thread, limited to the last 100 messages.
+   * Loads the message history for a chosen thread, limited to the last 50 messages initially.
    * Directly queries using the native TEXT conversation_id.
    */
   async function loadMessages(conversationId: string) {
@@ -211,11 +222,13 @@ export default function DashboardHub() {
         .from('messages')
         .select('*')
         .eq('conversation_id', conversationId)
-        .order('timestamp', { ascending: true }) // Sorted chronologically
-        .limit(100);
+        .order('timestamp', { ascending: false }) // Load newest first for pagination
+        .limit(50);
 
       if (error) throw error;
-      setMessages(data || []);
+      const sorted = (data || []).reverse(); // Render chronologically
+      setMessages(sorted);
+      setHasMore((data || []).length === 50);
     } catch (err) {
       console.error("[Dashboard] Error loading messages:", err);
     } finally {
@@ -223,7 +236,131 @@ export default function DashboardHub() {
     }
   }
 
-  // Handle manual reload trigger
+  /**
+   * Loads older messages (backward cursor pagination).
+   */
+  const handleLoadMore = async () => {
+    if (!selectedConversation || messages.length === 0 || isLoadingMore || !hasMore) return;
+    
+    try {
+      setIsLoadingMore(true);
+      const oldestMsg = messages[0];
+      
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', selectedConversation.conversation_id)
+        .lt('timestamp', oldestMsg.timestamp)
+        .order('timestamp', { ascending: false })
+        .limit(50);
+        
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        const reversedNewData = [...data].reverse();
+        setMessages(prev => [...reversedNewData, ...prev]);
+        setHasMore(data.length === 50);
+      } else {
+        setHasMore(false);
+      }
+    } catch (err) {
+      console.error("[Dashboard] Failed to load older messages:", err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  /**
+   * Updates bookmark state.
+   */
+  const handleToggleBookmark = async (msg: Message) => {
+    const nextBookmark = !msg.is_bookmarked;
+    setMessages(prev => prev.map(m => 
+      m.id === msg.id ? { ...m, is_bookmarked: nextBookmark } : m
+    ));
+    
+    const { error } = await supabase
+      .from('messages')
+      .update({ is_bookmarked: nextBookmark })
+      .eq('id', msg.id);
+      
+    if (error) {
+      console.error("Failed to update bookmark in Supabase:", error);
+      // Rollback
+      setMessages(prev => prev.map(m => 
+        m.id === msg.id ? { ...m, is_bookmarked: !nextBookmark } : m
+      ));
+    }
+  };
+
+  /**
+   * Updates pinned status of conversation.
+   */
+  const handleTogglePin = async (conv: Conversation) => {
+    const nextPinned = !conv.is_pinned;
+    setConversations(prev => prev.map(c => 
+      c.conversation_id === conv.conversation_id ? { ...c, is_pinned: nextPinned } : c
+    ));
+    if (selectedConversation?.conversation_id === conv.conversation_id) {
+      setSelectedConversation(prev => prev ? { ...prev, is_pinned: nextPinned } : null);
+    }
+    
+    const { error } = await supabase
+      .from('conversations')
+      .update({ is_pinned: nextPinned })
+      .eq('conversation_id', conv.conversation_id);
+      
+    if (error) {
+      console.error("Failed to pin conversation:", error);
+      setConversations(prev => prev.map(c => 
+        c.conversation_id === conv.conversation_id ? { ...c, is_pinned: !nextPinned } : c
+      ));
+    }
+  };
+
+  /**
+   * Updates unread status of conversation.
+   */
+  const handleToggleUnread = async (conv: Conversation) => {
+    const nextUnread = !conv.is_unread;
+    setConversations(prev => prev.map(c => 
+      c.conversation_id === conv.conversation_id ? { ...c, is_unread: nextUnread } : c
+    ));
+    if (selectedConversation?.conversation_id === conv.conversation_id) {
+      setSelectedConversation(prev => prev ? { ...prev, is_unread: nextUnread } : null);
+    }
+    
+    const { error } = await supabase
+      .from('conversations')
+      .update({ is_unread: nextUnread })
+      .eq('conversation_id', conv.conversation_id);
+      
+    if (error) {
+      console.error("Failed to toggle unread status:", error);
+      setConversations(prev => prev.map(c => 
+        c.conversation_id === conv.conversation_id ? { ...c, is_unread: !nextUnread } : c
+      ));
+    }
+  };
+
+  /**
+   * Handles selection of a thread, automatically clearing the unread flag.
+   */
+  const handleSelectConversation = async (conv: Conversation) => {
+    setSelectedConversation(conv);
+    
+    if (conv.is_unread) {
+      setConversations(prev => prev.map(c => 
+        c.conversation_id === conv.conversation_id ? { ...c, is_unread: false } : c
+      ));
+      await supabase
+        .from('conversations')
+        .update({ is_unread: false })
+        .eq('conversation_id', conv.conversation_id);
+    }
+  };
+
+  // Manual refresh hook
   const handleRefresh = () => {
     fetchConversations(searchQuery);
     if (selectedConversation) {
@@ -231,25 +368,86 @@ export default function DashboardHub() {
     }
   };
 
-  // If there is exactly one conversation, we hide the sidebar to provide a clean full-screen view.
-  // Otherwise, we show the sidebar for selection/search.
+  // Locally filtered & sorted conversation threads (Pinned first, then sorted by activity date)
+  const filteredConversations = useMemo(() => {
+    let result = [...conversations];
+    
+    if (filterType === 'pinned') {
+      result = result.filter(c => c.is_pinned);
+    } else if (filterType === 'unread') {
+      result = result.filter(c => c.is_unread);
+    }
+    
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(c => 
+        (c.conversation_name && c.conversation_name.toLowerCase().includes(q)) || 
+        c.conversation_id.toLowerCase().includes(q)
+      );
+    }
+    
+    result.sort((a, b) => {
+      if (a.is_pinned && !b.is_pinned) return -1;
+      if (!a.is_pinned && b.is_pinned) return 1;
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
+    
+    return result;
+  }, [conversations, filterType, searchQuery]);
+
+  // Global keyboard listener for conversation switching (Alt + Up / Alt + Down) and Esc deselect
+  useEffect(() => {
+    const handleSwitchConversations = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        if (filteredConversations.length === 0) return;
+        
+        let nextIndex = 0;
+        if (selectedConversation) {
+          const currentIndex = filteredConversations.findIndex(c => c.conversation_id === selectedConversation.conversation_id);
+          if (currentIndex !== -1) {
+            if (e.key === 'ArrowDown') {
+              nextIndex = (currentIndex + 1) % filteredConversations.length;
+            } else {
+              nextIndex = (currentIndex - 1 + filteredConversations.length) % filteredConversations.length;
+            }
+          }
+        }
+        
+        handleSelectConversation(filteredConversations[nextIndex]);
+      }
+      
+      if (e.key === 'Escape' && selectedConversation && isMobileView) {
+        setSelectedConversation(null);
+      }
+    };
+    
+    window.addEventListener('keydown', handleSwitchConversations);
+    return () => window.removeEventListener('keydown', handleSwitchConversations);
+  }, [filteredConversations, selectedConversation, isMobileView]);
+
+  // Responsive panel layouts
   const showSidebar = (conversations.length === 0 || conversations.length > 1) && (!isMobileView || !selectedConversation);
   const showChatArea = conversations.length === 1 || !isMobileView || !!selectedConversation;
 
   return (
-    <div className="flex h-screen bg-[#09090b] text-[#f4f4f5] overflow-hidden antialiased">
+    <div className="flex h-screen bg-black text-zinc-100 overflow-hidden antialiased">
       
-      {/* 1. SIDEBAR LIST */}
+      {/* 1. SIDEBAR PANEL */}
       {showSidebar && (
         <Sidebar
-          conversations={conversations}
+          conversations={filteredConversations}
           selectedConversation={selectedConversation}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
-          onSelectConversation={setSelectedConversation}
+          onSelectConversation={handleSelectConversation}
           isLoadingConversations={isLoadingConversations}
           syncStatus={syncStatus}
           onRefresh={handleRefresh}
+          onTogglePin={handleTogglePin}
+          onToggleUnread={handleToggleUnread}
+          filterType={filterType}
+          onFilterTypeChange={setFilterType}
         />
       )}
 
@@ -263,6 +461,10 @@ export default function DashboardHub() {
               isLoadingMessages={isLoadingMessages}
               isMobileView={isMobileView}
               onBack={() => setSelectedConversation(null)}
+              onToggleBookmark={handleToggleBookmark}
+              onLoadMore={handleLoadMore}
+              hasMore={hasMore}
+              isLoadingMore={isLoadingMore}
             />
           ) : (
             <EmptyState />

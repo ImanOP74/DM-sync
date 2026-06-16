@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_name TEXT,                    -- Display name of the conversation
     avatar_url TEXT,                           -- Profile picture URL
     last_message TEXT,                         -- Denormalized latest message preview
+    is_pinned BOOLEAN NOT NULL DEFAULT false,  -- Pin conversation to top
+    is_unread BOOLEAN NOT NULL DEFAULT false,  -- Conversation has unread messages
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,                              -- Message content
     timestamp TIMESTAMPTZ NOT NULL,            -- Native message timestamp
     sent_by_me BOOLEAN NOT NULL,               -- Outgoing message flag
+    is_bookmarked BOOLEAN NOT NULL DEFAULT false, -- Message bookmarked by user
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()) -- Ingestion timestamp
 );
 

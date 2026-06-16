@@ -160,13 +160,13 @@ export default function Sidebar({
                 {conv.avatar_url ? (
                   <img 
                     src={conv.avatar_url} 
-                    alt={conv.username || 'Profile avatar'} 
+                    alt={conv.conversation_name || 'Profile avatar'} 
                     className="w-11 h-11 rounded-full object-cover shadow-md flex-shrink-0 border border-zinc-800"
                     referrerPolicy="no-referrer"
                   />
                 ) : (
                   <div className={`flex items-center justify-center w-11 h-11 rounded-full bg-gradient-to-tr ${getAvatarGradient(conv.id)} text-white font-bold text-sm shadow-md flex-shrink-0`}>
-                    {getInitials(conv.username)}
+                    {getInitials(conv.conversation_name)}
                   </div>
                 )}
 
@@ -174,7 +174,7 @@ export default function Sidebar({
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h3 className="font-semibold text-sm truncate text-zinc-100">
-                      {conv.username || `User ${conv.conversation_id.substring(0, 8)}`}
+                      {conv.conversation_name || `User ${conv.conversation_id.substring(0, 8)}`}
                     </h3>
                     <span className="text-[10px] text-zinc-500 whitespace-nowrap">
                       {formatDate(conv.updated_at)}

@@ -103,7 +103,8 @@ async function handleSyncInboxConversations({ conversations }) {
 }
 
 /**
- * Handles the active conversation & message upsert flow with retry capability.
+ * Handles the active conversation & message upsert flow.
+ * Directly inserts messages using native conversation_id (TEXT).
  */
 async function handleSyncThread({ conversation, messages }) {
   if (!SUPABASE_URL || SUPABASE_URL.includes("your-supabase-project-id")) {
@@ -113,7 +114,7 @@ async function handleSyncThread({ conversation, messages }) {
   // Filter out any non-target thread syncs if TARGET_THREAD_IDS is specified
   if (TARGET_THREAD_IDS && TARGET_THREAD_IDS.length > 0 && !TARGET_THREAD_IDS.includes(conversation.conversation_id)) {
     console.log(`[DM Mirror] Sync ignored. Thread ID ${conversation.conversation_id} does not match any TARGET_THREAD_IDS`);
-    return { dbConversationId: null, syncedMessagesCount: 0, skipped: true };
+    return { dbConversationId: conversation.conversation_id, syncedMessagesCount: 0, skipped: true };
   }
 
   // --- Step 1: Upsert Conversation ---
@@ -124,37 +125,19 @@ async function handleSyncThread({ conversation, messages }) {
       'apikey': SUPABASE_ANON_KEY,
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      'Prefer': 'resolution=merge-duplicates, return=representation'
+      'Prefer': 'resolution=merge-duplicates'
     },
     body: JSON.stringify([conversation])
   };
 
   console.log(`[DM Mirror] Syncing active thread details: ${conversation.conversation_id}...`);
-  const conversationResponse = await fetchWithRetry(conversationUrl, conversationOptions);
+  await fetchWithRetry(conversationUrl, conversationOptions);
   
-  const conversationsData = await conversationResponse.json();
-  if (!conversationsData || conversationsData.length === 0) {
-    throw new Error("Empty conversation representation returned from database.");
-  }
-
-  const dbConversationId = conversationsData[0].id;
-  console.log(`[DM Mirror] Chat mapped to DB UUID: ${dbConversationId}`);
-
   if (messages.length === 0) {
-    return { dbConversationId, syncedMessagesCount: 0 };
+    return { dbConversationId: conversation.conversation_id, syncedMessagesCount: 0 };
   }
 
-  // --- Step 2: Bind database UUID to messages ---
-  const mappedMessages = messages.map(msg => ({
-    conversation_id: dbConversationId,
-    message_hash: msg.message_hash,
-    sender_name: msg.sender_name,
-    content: msg.content,
-    timestamp: msg.timestamp,
-    sent_by_me: msg.sent_by_me
-  }));
-
-  // --- Step 3: Upsert Messages ---
+  // --- Step 2: Upsert Messages (Related directly via TEXT conversation_id) ---
   const messagesUrl = `${SUPABASE_URL}/rest/v1/messages`;
   const messagesOptions = {
     method: 'POST',
@@ -164,12 +147,12 @@ async function handleSyncThread({ conversation, messages }) {
       'Content-Type': 'application/json',
       'Prefer': 'resolution=merge-duplicates, on-conflict=message_hash'
     },
-    body: JSON.stringify(mappedMessages)
+    body: JSON.stringify(messages)
   };
 
-  console.log(`[DM Mirror] Dispatching ${mappedMessages.length} message(s) to DB...`);
+  console.log(`[DM Mirror] Dispatching ${messages.length} message(s) to DB...`);
   await fetchWithRetry(messagesUrl, messagesOptions);
   
   console.log(`[DM Mirror] Synchronization verified for ${messages.length} message(s).`);
-  return { dbConversationId, syncedMessagesCount: messages.length };
+  return { dbConversationId: conversation.conversation_id, syncedMessagesCount: messages.length };
 }

@@ -20,16 +20,16 @@ export default function DashboardHub() {
   const [isMobileView, setIsMobileView] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'connected' | 'error' | 'connecting'>('connecting');
 
-  // Refs for tracking connection state & synchronization closures
+  // Refs for tracking connection state & synchronization closures (tracked by native string conversation_id)
   const activeConversationIdRef = useRef<string | null>(null);
   const isFirstLoad = useRef(true);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Synchronize active conversation ID with a ref to avoid stale closures in realtime callbacks
   useEffect(() => {
-    activeConversationIdRef.current = selectedConversation ? selectedConversation.id : null;
+    activeConversationIdRef.current = selectedConversation ? selectedConversation.conversation_id : null;
     if (selectedConversation) {
-      loadMessages(selectedConversation.id);
+      loadMessages(selectedConversation.conversation_id);
     } else {
       setMessages([]);
     }
@@ -86,7 +86,7 @@ export default function DashboardHub() {
           if (payload.eventType === 'INSERT') {
             const newConv = payload.new as Conversation;
             setConversations(prev => {
-              if (prev.some(c => c.id === newConv.id)) return prev;
+              if (prev.some(c => c.conversation_id === newConv.conversation_id)) return prev;
               const nextList = [newConv, ...prev];
               // Auto-select conversation if it's the first one synced
               if (nextList.length === 1) {
@@ -97,7 +97,7 @@ export default function DashboardHub() {
           } else if (payload.eventType === 'UPDATE') {
             const updatedConv = payload.new as Conversation;
             setConversations(prev => {
-              const filtered = prev.filter(c => c.id !== updatedConv.id);
+              const filtered = prev.filter(c => c.conversation_id !== updatedConv.conversation_id);
               return [updatedConv, ...filtered]; // Sort updated to the top
             });
           }
@@ -146,14 +146,14 @@ export default function DashboardHub() {
 
           // Trigger a quick reorder on the conversations list
           setConversations(prev => {
-            const target = prev.find(c => c.id === newMsg.conversation_id);
+            const target = prev.find(c => c.conversation_id === newMsg.conversation_id);
             if (target) {
               const updatedTarget = { 
                 ...target, 
                 updated_at: newMsg.timestamp,
                 last_message: newMsg.content
               };
-              const filtered = prev.filter(c => c.id !== newMsg.conversation_id);
+              const filtered = prev.filter(c => c.conversation_id !== newMsg.conversation_id);
               return [updatedTarget, ...filtered];
             }
             return prev;
@@ -184,7 +184,7 @@ export default function DashboardHub() {
 
       // Perform server-side search if text is provided
       if (queryText.trim()) {
-        query = query.or(`username.ilike.%${queryText}%,conversation_id.like.%${queryText}%`);
+        query = query.or(`conversation_name.ilike.%${queryText}%,conversation_id.like.%${queryText}%`);
       }
 
       const { data, error } = await query;
@@ -202,6 +202,7 @@ export default function DashboardHub() {
 
   /**
    * Loads the message history for a chosen thread, limited to the last 100 messages.
+   * Directly queries using the native TEXT conversation_id.
    */
   async function loadMessages(conversationId: string) {
     try {
@@ -226,7 +227,7 @@ export default function DashboardHub() {
   const handleRefresh = () => {
     fetchConversations(searchQuery);
     if (selectedConversation) {
-      loadMessages(selectedConversation.id);
+      loadMessages(selectedConversation.conversation_id);
     }
   };
 

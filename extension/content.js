@@ -1,11 +1,12 @@
 /**
  * DM Mirror - Optimized Content Script
  * 
- * Key Enhancements:
+ * Key Features:
  * 1. Debounced Scraper: Wraps DOM queries to run at most once every 300ms.
  * 2. Strict ID Stability: Senders are mapped to 'me' or participant name.
  * 3. Automated Inbox Scraper: Detects and syncs visible DM conversations in the inbox view.
  * 4. React Event Dispatcher: Auto-scroller dispatches native scroll events.
+ * 5. Sender Username Extraction: Scrapes sender usernames (especially in group chats) and maps columns to specification.
  */
 
 console.log("[DM Mirror] Real-time content observer script active.");
@@ -124,7 +125,7 @@ function scrapeInboxConversations() {
     if (conversationId && username) {
       conversations.push({
         conversation_id: conversationId,
-        username: username,
+        conversation_name: username,
         avatar_url: avatarUrl,
         last_message: lastMessage || '',
         updated_at: new Date().toISOString()
@@ -463,6 +464,25 @@ function getNearestTimestampHeader(bubble) {
 }
 
 /**
+ * Scrapes sender's username (especially useful in group chats where name is shown above the bubble group).
+ */
+function findSenderUsername(bubble, container) {
+  let parent = bubble.parentElement;
+  while (parent && parent !== container && parent.tagName !== 'BODY') {
+    // Check preceding siblings of the bubble's parent element
+    let sibling = parent.previousElementSibling;
+    if (sibling) {
+      const text = sibling.textContent.trim();
+      if (text && text.length > 0 && text.length < 30 && !isTimestampHeader(sibling) && isValidChatName(text)) {
+        return text;
+      }
+    }
+    parent = parent.parentElement;
+  }
+  return null;
+}
+
+/**
  * Scans the visible chat log, extracts messages, and fires sync messages.
  */
 function syncAllVisibleMessages(container) {
@@ -502,6 +522,11 @@ function syncAllVisibleMessages(container) {
 
     const outgoing = isOutgoingMessage(bubble);
     const senderName = outgoing ? 'me' : activeChatName;
+    
+    // Scrape sender username: check DOM above bubble or fall back
+    const scrapedUsername = outgoing ? 'me' : findSenderUsername(bubble, container);
+    const senderUsername = scrapedUsername || senderName;
+    
     const timeHeader = getNearestTimestampHeader(bubble);
 
     // Calculate occurrence index for duplicate consecutive texts
@@ -520,8 +545,10 @@ function syncAllVisibleMessages(container) {
     }
 
     newMessages.push({
+      conversation_id: activeThreadId, // TEXT ID directly linked
       message_hash: messageHash,
       sender_name: senderName,
+      sender_username: senderUsername,
       content: text,
       timestamp: new Date().toISOString(),
       sent_by_me: outgoing
@@ -538,7 +565,7 @@ function syncAllVisibleMessages(container) {
       payload: {
         conversation: {
           conversation_id: activeThreadId,
-          username: activeChatName,
+          conversation_name: activeChatName,
           avatar_url: activeChatAvatarUrl,
           last_message: newMessages[newMessages.length - 1].content,
           updated_at: new Date().toISOString()

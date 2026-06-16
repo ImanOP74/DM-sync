@@ -74,19 +74,19 @@ export default function ChatArea({
           {selectedConversation.avatar_url ? (
             <img 
               src={selectedConversation.avatar_url} 
-              alt={selectedConversation.username || 'Profile avatar'} 
+              alt={selectedConversation.conversation_name || 'Profile avatar'} 
               className="w-10 h-10 rounded-full object-cover shadow-md border border-zinc-800"
               referrerPolicy="no-referrer"
             />
           ) : (
             <div className={`flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-tr ${getAvatarGradient(selectedConversation.id)} text-white font-semibold text-xs shadow-md`}>
-              {getInitials(selectedConversation.username)}
+              {getInitials(selectedConversation.conversation_name)}
             </div>
           )}
           
           <div>
             <h2 className="font-semibold text-sm text-zinc-100">
-              {selectedConversation.username || 'Conversation Detail'}
+              {selectedConversation.conversation_name || 'Conversation Detail'}
             </h2>
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
@@ -119,13 +119,27 @@ export default function ChatArea({
             </p>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, index) => {
             const isMe = msg.sent_by_me;
+            
+            // Show sender name/username above message bubble when the sender changes
+            const showSenderName = !isMe && (
+              index === 0 || 
+              messages[index - 1].sent_by_me || 
+              messages[index - 1].sender_name !== msg.sender_name
+            );
+
             return (
               <div 
                 key={msg.id} 
                 className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}
               >
+                {showSenderName && (
+                  <span className="text-[10px] text-zinc-500 font-semibold ml-2 mb-1 tracking-wide">
+                    {msg.sender_username || msg.sender_name || 'other'}
+                  </span>
+                )}
+
                 <div 
                   className={`max-w-[80%] sm:max-w-[70%] rounded-2xl px-4 py-2 text-sm shadow-md break-words whitespace-pre-wrap leading-relaxed transition-all ${
                     isMe 
@@ -150,13 +164,13 @@ export default function ChatArea({
       <div className="p-4 bg-[#09090b]/80 border-t border-zinc-800 backdrop-blur-md flex items-center gap-3">
         <div className="flex-1 flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 select-none text-zinc-500 text-xs italic">
           <Lock size={12} className="text-zinc-600 flex-shrink-0" />
-          <span className="truncate">Read-only synchronized dashboard. Replying from here is disabled. Respond via Instagram.</span>
+          <span className="truncate">Read-only mirrored dashboard. Replying is disabled. Respond via Instagram.</span>
         </div>
         <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-600 select-none">
           <Send size={16} />
         </div>
       </div>
 
-      </div>
+    </div>
   );
 }

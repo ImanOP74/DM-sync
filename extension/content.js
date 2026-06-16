@@ -423,22 +423,62 @@ function isOutgoingMessage(element) {
 }
 
 /**
+ * Helper to match typical Instagram timestamp string structures strictly.
+ */
+function isTimestampText(text) {
+  text = text.trim();
+  if (!text) return false;
+  
+  // 1. Time only, e.g. "12:40" or "12:40 PM" or "12:40 AM"
+  const timeOnlyRegex = /^\d{1,2}:\d{2}(?:\s?[APap][Mm])?$/;
+  if (timeOnlyRegex.test(text)) return true;
+  
+  // 2. Relative time, e.g. "Today 12:40 PM", "Yesterday 12:40"
+  const relativeTimeRegex = /^(?:Today|Yesterday)\s\d{1,2}:\d{2}(?:\s?[APap][Mm])?$/i;
+  if (relativeTimeRegex.test(text)) return true;
+  
+  // 3. Day of week time, e.g. "Wednesday 12:40 PM" or "Wednesday 12:40"
+  const dayOfWeekTimeRegex = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s\d{1,2}:\d{2}(?:\s?[APap][Mm])?$/i;
+  if (dayOfWeekTimeRegex.test(text)) return true;
+  
+  // 4. Calendar date time:
+  // e.g. "Jun 16, 2026, 12:40 PM", "16 Jun 2026, 12:40", "Jun 16, 12:40 PM", "16 Jun, 12:40"
+  const monthPattern = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*";
+  const calendarDateTimeRegex = new RegExp(
+    `^(?:` +
+    // Pattern A: "Jun 16, 2026, 12:40 PM" or "Jun 16, 12:40"
+    `${monthPattern}\\s\\d{1,2}(?:,\\s\\d{4})?,?\\s\\d{1,2}:\\d{2}(?:\\s?[APap][Mm])?` +
+    `|` +
+    // Pattern B: "16 Jun 2026, 12:40" or "16 Jun, 12:40"
+    `\\d{1,2}\\s${monthPattern}(?:\\s\\d{4})?,?\\s\\d{1,2}:\\d{2}(?:\\s?[APap][Mm])?` +
+    `)$`,
+    'i'
+  );
+  if (calendarDateTimeRegex.test(text)) return true;
+  
+  return false;
+}
+
+/**
  * Checks if a node represents a timestamp divider row.
  */
 function isTimestampHeader(element) {
   if (!element) return false;
   
+  // If it's a <time> element or has a <time> tag, it's a timestamp
+  if (element.tagName === 'TIME' || element.querySelector('time')) {
+    return true;
+  }
+  
+  // Message bubbles are always inside [role="row"]. Timestamp headers are not.
+  if (element.closest('[role="row"]')) {
+    return false;
+  }
+
   const text = element.textContent.trim();
   if (text.length === 0) return false;
 
-  const isRow = element.getAttribute('role') === 'row' || element.querySelector('[role="row"]');
-  if (isRow) return false;
-
-  return text.includes(':') || 
-         text.includes('AM') || 
-         text.includes('PM') || 
-         text.match(/(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i) ||
-         text.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i);
+  return isTimestampText(text);
 }
 
 /**
@@ -508,7 +548,8 @@ function syncAllVisibleMessages(container) {
   const bubbles = Array.from(container.querySelectorAll('div[dir="auto"], span[dir="auto"]')).filter(el => {
     return !el.closest('[contenteditable="true"]') && 
            !el.closest('form') && 
-           !el.closest('[role="textbox"]');
+           !el.closest('[role="textbox"]') &&
+           !isTimestampHeader(el);
   });
 
   if (bubbles.length === 0) return;
